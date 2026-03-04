@@ -312,24 +312,110 @@ def render_comparison_extras(ctx: dict):
     # -----------------------------
     # One-page PDF
     # -----------------------------
-    st.markdown("### One-page summary PDF")
-    try:
-        uA = float(a["Units"].sum()) if (not a.empty and "Units" in a.columns) else 0.0
-        uB = float(b["Units"].sum()) if (not b.empty and "Units" in b.columns) else 0.0
-        sA = float(a["Sales"].sum()) if (not a.empty and "Sales" in a.columns) else 0.0
-        sB = float(b["Sales"].sum()) if (not b.empty and "Sales" in b.columns) else 0.0
-        kpis = [
-            ("Units", fmt_int(uA), fmt_int(uB), fmt_int_signed(uB - uA)),
-            ("Sales", fmt_currency(sA), fmt_currency(sB), fmt_currency_signed(sB - sA)),
-        ]
-        subtitle = f"{label_a} vs {label_b} • Metric: {col} • Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        pdf_bytes = make_one_pager_pdf("Sales Dashboard – Comparison One-pager", subtitle, kpis, (insights[:8] + driver_lines)[:12], None)
-        if pdf_bytes:
-            st.download_button("Prepare one-page PDF", data=pdf_bytes, file_name="comparison_one_pager.pdf", mime="application/pdf")
-        else:
-            st.caption("PDF export unavailable (ReportLab missing).")
-    except Exception:
-        st.caption("PDF export unavailable.")
+    st.markdown("### Comparison PDF Export")
+    st.caption("Exports the comparison using your current timeframe selections and any Retailer/Vendor filters.")
+
+    if "cmp_onepager_pdf_bytes" not in st.session_state:
+        st.session_state.cmp_onepager_pdf_bytes = None
+        st.session_state.cmp_onepager_pdf_name = None
+
+    build = st.button("Build Comparison One‑Pager (PDF)", use_container_width=True, key="cmp_onepager_build_btn")
+    include_table = st.checkbox("Include Top changes table", value=True, key="cmp_onepager_include_table")
+
+    if build:
+        try:
+            # Context
+            by_dim = ctx.get("by", "Vendor")
+            flt = ctx.get("filters", {}) or {}
+            fR = flt.get("retailers", []) or []
+            fV = flt.get("vendors", []) or []
+            limit_vals = flt.get("limit_values", []) or []
+
+            # Totals
+            uA = float(a["Units"].sum()) if (a is not None and not a.empty and "Units" in a.columns) else 0.0
+            uB = float(b["Units"].sum()) if (b is not None and not b.empty and "Units" in b.columns) else 0.0
+            sA = float(a["Sales"].sum()) if (a is not None and not a.empty and "Sales" in a.columns) else 0.0
+            sB = float(b["Sales"].sum()) if (b is not None and not b.empty and "Sales" in b.columns) else 0.0
+
+            du = uB - uA
+            ds = sB - sA
+            du_pct = (du / uA) if uA else None
+            ds_pct = (ds / sA) if sA else None
+
+            def _delta_money(v, pct=None):
+                s = _fmt_pdf_money(v)
+                if pct is None:
+                    return s
+                try:
+                    return f"{s} ({pct*100:+.1f}%)"
+                except Exception:
+                    return s
+
+            def _delta_int(v, pct=None):
+                s = _fmt_pdf_int(v)
+                if pct is None:
+                    return s
+                try:
+                    return f"{s} ({pct*100:+.1f}%)"
+                except Exception:
+                    return s
+
+            kpis = [
+                ("Sales A", _fmt_pdf_money(sA), None),
+                ("Sales B", _fmt_pdf_money(sB), _delta_money(ds, ds_pct)),
+                ("Units A", _fmt_pdf_int(uA), None),
+                ("Units B", _fmt_pdf_int(uB), _delta_int(du, du_pct)),
+            ]
+
+            # Subtitle reflects filters
+            parts = [f"{label_a} vs {label_b}", f"Compare by: {by_dim}"]
+            if fR:
+                parts.append(f"Retailer filter: {', '.join(map(str, fR[:3]))}{'…' if len(fR)>3 else ''}")
+            if fV:
+                parts.append(f"Vendor filter: {', '.join(map(str, fV[:3]))}{'…' if len(fV)>3 else ''}")
+            if limit_vals:
+                parts.append(f"Limited {by_dim}(s): {', '.join(map(str, limit_vals[:3]))}{'…' if len(limit_vals)>3 else ''}")
+            parts.append(f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+            subtitle = " • ".join(parts)
+
+            bullets = []
+            bullets.append(f"Total sales: {_fmt_pdf_money(sA)} → {_fmt_pdf_money(sB)} ({_fmt_pdf_money(ds)}).")
+            bullets.append(f"Total units: {_fmt_pdf_int(uA)} → {_fmt_pdf_int(uB)} ({_fmt_pdf_int(du)}).")
+
+            # Build a small Top changes table
+            table_df = None
+            if include_table and by_dim in a.columns and by_dim in b.columns:
+                ga = a.groupby(by_dim, as_index=False).agg(Units_A=("Units","sum"), Sales_A=("Sales","sum"))
+                gb = b.groupby(by_dim, as_index=False).agg(Units_B=("Units","sum"), Sales_B=("Sales","sum"))
+                out = ga.merge(gb, on=by_dim, how="outer").fillna(0.0)
+                out["Sales_Diff"] = out["Sales_B"] - out["Sales_A"]
+                out["Units_Diff"] = out["Units_B"] - out["Units_A"]
+                out["_abs"] = out["Sales_Diff"].abs()
+                out = out.sort_values("_abs", ascending=False).drop(columns=["_abs"]).head(10).copy()
+                out["Sales_A"] = out["Sales_A"].map(_fmt_pdf_money)
+                out["Sales_B"] = out["Sales_B"].map(_fmt_pdf_money)
+                out["Sales_Diff"] = out["Sales_Diff"].map(_fmt_pdf_money)
+                out["Units_A"] = out["Units_A"].map(_fmt_pdf_int)
+                out["Units_B"] = out["Units_B"].map(_fmt_pdf_int)
+                out["Units_Diff"] = out["Units_Diff"].map(_fmt_pdf_int)
+                table_df = out[[by_dim, "Sales_A", "Sales_B", "Sales_Diff", "Units_A", "Units_B", "Units_Diff"]]
+
+            pdf_bytes = make_one_pager_pdf("Cornerstone Sales Dashboard — Comparison One‑Pager", subtitle, kpis, bullets, table_df)
+            st.session_state.cmp_onepager_pdf_bytes = pdf_bytes
+            st.session_state.cmp_onepager_pdf_name = f"Comparison_{re.sub(r'[^A-Za-z0-9_\-]+','_',label_a)}_vs_{re.sub(r'[^A-Za-z0-9_\-]+','_',label_b)}.pdf"
+            st.success("Comparison one‑pager is ready below.")
+        except Exception as e:
+            st.error(f"Comparison PDF build failed: {e}")
+
+    if st.session_state.cmp_onepager_pdf_bytes:
+        st.download_button(
+            "⬇️ Download Comparison One‑Pager (PDF)",
+            data=st.session_state.cmp_onepager_pdf_bytes,
+            file_name=st.session_state.cmp_onepager_pdf_name or "comparison_one_pager.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            key="cmp_onepager_dl_btn",
+        )
 
 def make_one_pager_pdf(title: str, subtitle: str, kpis: list, bullets: list[str], table_df: pd.DataFrame|None) -> bytes:
     try:
@@ -654,6 +740,27 @@ def fmt_int_signed(x) -> str:
         return str(x)
     x = int(round(x))
     return f"-{abs(x):,}" if x < 0 else f"{x:,}"
+
+# PDF-friendly formatting helpers (safe to use anywhere)
+def _fmt_pdf_money(v) -> str:
+    try:
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return ""
+        if isinstance(v, str) and v.strip().startswith("$"):
+            return v.strip()
+        return f"${float(v):,.2f}"
+    except Exception:
+        return ""
+
+def _fmt_pdf_int(v) -> str:
+    try:
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return ""
+        return f"{int(round(float(v))):,}"
+    except Exception:
+        return ""
+
+
 
 def make_unique_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Ensure dataframe has unique column names (pyarrow requirement)."""
@@ -1672,221 +1779,8 @@ def _compute_wow_insights(df_full: pd.DataFrame):
 
     return (takeaway, drivers_df, opp_df)
 # ------------
-# Sidebar: PDF Export (Weekly Summary)
-# ----------------------
-st.sidebar.markdown("---")
-with st.sidebar.expander("📄 PDF Export", expanded=False):
-    st.caption("Generate the Weekly Summary PDF without navigating to another tab.")
 
-    use_exec_scope = st.checkbox("Export using Executive Summary selection (Scope/Vendor/Retailer)", value=False, key="sb_pdf_use_exec_scope")
-    if use_exec_scope:
-        _sc = st.session_state.get("ex_scope", "All")
-        if _sc == "Vendor":
-            st.caption(f"Scope: Vendor — {st.session_state.get('ex_pick_v', '(not selected)')}")
-        elif _sc == "Retailer":
-            st.caption(f"Scope: Retailer — {st.session_state.get('ex_pick_r', '(not selected)')}")
-        else:
-            st.caption("Scope: All")
-
-    if "sb_weekly_pdf_bytes" not in st.session_state:
-        st.session_state.sb_weekly_pdf_bytes = None
-        st.session_state.sb_weekly_pdf_name = None
-
-    if st.button("Build Weekly Summary PDF", use_container_width=True, key="sb_btn_build_weekly_pdf"):
-        try:
-            if df_all is None or df_all.empty:
-                st.warning("No sales data loaded yet.")
-            else:
-                # Use filtered dataset for export
-                df_src = df_all.copy() if ('df_all' in globals() and df_all is not None) else df_all_raw
-                if use_exec_scope and df_src is not None and not df_src.empty:
-                    _sc = st.session_state.get("ex_scope", "All")
-                    if _sc == "Vendor":
-                        _pick = st.session_state.get("ex_pick_v", None)
-                        if _pick:
-                            df_src = df_src[df_src["Vendor"] == _pick].copy()
-                    elif _sc == "Retailer":
-                        _pick = st.session_state.get("ex_pick_r", None)
-                        if _pick:
-                            df_src = df_src[df_src["Retailer"] == _pick].copy()
-
-                cur, prev, cur_start, cur_end = _get_current_and_prev_week(df_src)
-                if cur is None or cur.empty:
-                    st.warning("No current-week data found.")
-                else:
-                    # Core tables
-                    cur_r = cur.groupby("Retailer", as_index=False)[["Units","Sales"]].sum()
-                    prev_r = prev.groupby("Retailer", as_index=False)[["Units","Sales"]].sum() if (prev is not None and not prev.empty) else pd.DataFrame(columns=["Retailer","Units","Sales"])
-                    cur_v = cur.groupby("Vendor", as_index=False)[["Units","Sales"]].sum()
-                    prev_v = prev.groupby("Vendor", as_index=False)[["Units","Sales"]].sum() if (prev is not None and not prev.empty) else pd.DataFrame(columns=["Vendor","Units","Sales"])
-                    cur_s = cur.groupby("SKU", as_index=False)[["Units","Sales"]].sum()
-                    prev_s = prev.groupby("SKU", as_index=False)[["Units","Sales"]].sum() if (prev is not None and not prev.empty) else pd.DataFrame(columns=["SKU","Units","Sales"])
-
-                    def _add_wow_sales(cur_df: pd.DataFrame, prev_df: pd.DataFrame, key: str) -> pd.DataFrame:
-                        cur2 = cur_df.copy()
-                        prev2 = prev_df.copy() if prev_df is not None else pd.DataFrame(columns=[key, "Sales", "Units"])
-                        if key not in cur2.columns:
-                            return cur2
-                        if "Sales" not in cur2.columns: cur2["Sales"] = 0.0
-                        if "Units" not in cur2.columns: cur2["Units"] = 0.0
-                        if key not in prev2.columns: prev2[key] = []
-                        if "Sales" not in prev2.columns: prev2["Sales"] = 0.0
-                        prev2 = prev2[[key, "Sales"]].rename(columns={"Sales":"Sales_prev"})
-                        cur2 = cur2.merge(prev2, on=key, how="left")
-                        cur2["Sales_prev"] = cur2["Sales_prev"].fillna(0.0)
-                        cur2["WoW $ Diff"] = cur2["Sales"] - cur2["Sales_prev"]
-                        cur2["WoW $ %"] = np.where(cur2["Sales_prev"] > 0, cur2["WoW $ Diff"] / cur2["Sales_prev"], np.nan)
-                        return cur2
-
-                    top_r = _add_wow_sales(cur_r, prev_r, "Retailer").sort_values("Sales", ascending=False).head(10)
-                    top_v = _add_wow_sales(cur_v, prev_v, "Vendor").sort_values("Sales", ascending=False).head(10)
-                    top_s = _add_wow_sales(cur_s, prev_s, "SKU").sort_values("Sales", ascending=False).head(10)
-
-                    # Biggest movers (SKU)
-                    movers = cur_s.merge(prev_s, on="SKU", how="left", suffixes=("_cur","_prev"))
-                    movers["Sales_prev"] = movers["Sales_prev"].fillna(0.0)
-                    movers["Units_prev"] = movers["Units_prev"].fillna(0.0)
-                    movers["WoW Sales"] = movers["Sales_cur"] - movers["Sales_prev"]
-                    movers["WoW Units"] = movers["Units_cur"] - movers["Units_prev"]
-                    movers["_abs_wow_sales"] = movers["WoW Sales"].abs()
-                    movers = movers.sort_values("_abs_wow_sales", ascending=False).head(25).drop(columns=["_abs_wow_sales"])
-
-                    movers_pdf = movers.rename(columns={
-                        "Sales_cur":"Sales (This Week)",
-                        "Sales_prev":"Sales (Prev Week)",
-                        "Units_cur":"Units (This Week)",
-                        "Units_prev":"Units (Prev Week)",
-                    }).copy()
-
-                    for c in ["Sales (This Week)","Sales (Prev Week)","WoW Sales"]:
-                        if c in movers_pdf.columns: movers_pdf[c] = movers_pdf[c].map(_fmt_pdf_money)
-                    for c in ["Units (This Week)","Units (Prev Week)","WoW Units"]:
-                        if c in movers_pdf.columns: movers_pdf[c] = movers_pdf[c].map(_fmt_pdf_int)
-
-                    # Momentum table (top 15)
-                    try:
-                        mom_pdf_export = compute_momentum_table(df_all, window=12).head(15).copy()
-                    except Exception:
-                        mom_pdf_export = pd.DataFrame(columns=["SKU","Momentum","Up Weeks","Down Weeks","Units_Last","Sales_Last"])
-                    if mom_pdf_export is None or mom_pdf_export.empty:
-                        mom_pdf_export = pd.DataFrame(columns=["SKU","Momentum","Up Weeks","Down Weeks","Units_Last","Sales_Last"])
-                    else:
-                        if "Units_Last" in mom_pdf_export.columns: mom_pdf_export["Units_Last"] = mom_pdf_export["Units_Last"].map(_fmt_pdf_int)
-                        if "Sales_Last" in mom_pdf_export.columns: mom_pdf_export["Sales_Last"] = mom_pdf_export["Sales_Last"].map(_fmt_pdf_money)
-
-                    # KPI dict + highlights
-                    total_sales_cur = float(cur_s["Sales"].sum()) if "Sales" in cur_s.columns else 0.0
-                    total_units_cur = float(cur_s["Units"].sum()) if "Units" in cur_s.columns else 0.0
-                    total_sales_prev = float(prev_s["Sales"].sum()) if (prev is not None and not prev.empty and "Sales" in prev_s.columns) else 0.0
-                    total_units_prev = float(prev_s["Units"].sum()) if (prev is not None and not prev.empty and "Units" in prev_s.columns) else 0.0
-
-                    wow_sales = total_sales_cur - total_sales_prev
-                    wow_units = total_units_cur - total_units_prev
-                    wow_sales_pct = (wow_sales / total_sales_prev) if total_sales_prev > 0 else None
-                    wow_units_pct = (wow_units / total_units_prev) if total_units_prev > 0 else None
-
-                    kpi_dict = {
-                        "Sales": _fmt_pdf_money(total_sales_cur),
-                        "Units": _fmt_pdf_int(total_units_cur),
-                        "WoW Sales": _fmt_pdf_money(wow_sales) + (f" ({wow_sales_pct*100:,.1f}%)" if wow_sales_pct is not None else ""),
-                        "WoW Units": _fmt_pdf_int(wow_units) + (f" ({wow_units_pct*100:,.1f}%)" if wow_units_pct is not None else ""),
-                    }
-
-                    highlights = [
-                        f"Week {pd.to_datetime(cur_start).date()} to {pd.to_datetime(cur_end).date()} total sales {_fmt_pdf_money(total_sales_cur)} on {_fmt_pdf_int(total_units_cur)} units.",
-                        f"WoW sales change: {_fmt_pdf_money(wow_sales)}.",
-                        f"WoW units change: {_fmt_pdf_int(wow_units)}.",
-                    ]
-
-                    # Format top tables for PDF
-                    def _format_top(df_in: pd.DataFrame, key_col: str) -> pd.DataFrame:
-                        if df_in is None or df_in.empty:
-                            return pd.DataFrame(columns=[key_col, "Units", "Sales", "WoW $ Diff"])
-                        out = df_in.copy()
-                        if "Units" in out.columns: out["Units"] = out["Units"].map(_fmt_pdf_int)
-                        if "Sales" in out.columns: out["Sales"] = out["Sales"].map(_fmt_pdf_money)
-                        if "WoW $ Diff" in out.columns: out["WoW $ Diff"] = out["WoW $ Diff"].map(_fmt_pdf_money)
-                        cols = [c for c in [key_col, "Units", "Sales", "WoW $ Diff"] if c in out.columns]
-                        return out[cols]
-
-                    top_r_pdf = _format_top(top_r, "Retailer")
-                    top_v_pdf = _format_top(top_v, "Vendor")
-                    top_s_pdf = _format_top(top_s, "SKU")
-
-                    # Declining vendors / retailers (WoW Sales < 0 based on current vs previous week)
-                    def _declines_simple(cur_df: pd.DataFrame, prev_df: pd.DataFrame, key: str) -> pd.DataFrame:
-                        cur2 = cur_df.copy()
-                        prev2 = prev_df.copy() if prev_df is not None else pd.DataFrame(columns=[key, "Units", "Sales"])
-                        cur2 = cur2.rename(columns={"Units": "Units_cur", "Sales": "Sales_cur"})
-                        prev2 = prev2.rename(columns={"Units": "Units_prev", "Sales": "Sales_prev"})
-                        if key not in prev2.columns:
-                            prev2[key] = []
-                        out = cur2.merge(prev2[[key, "Units_prev", "Sales_prev"]], on=key, how="left")
-                        out["Units_prev"] = out["Units_prev"].fillna(0.0)
-                        out["Sales_prev"] = out["Sales_prev"].fillna(0.0)
-                        out["WoW Sales"] = out["Sales_cur"] - out["Sales_prev"]
-                        out["WoW Units"] = out["Units_cur"] - out["Units_prev"]
-                        out["%∆Sales"] = np.where(out["Sales_prev"] > 0, out["WoW Sales"] / out["Sales_prev"], np.nan)
-                        out = out[(out["WoW Sales"] < 0) & (out["Sales_prev"] > 0)].sort_values("WoW Sales").head(10)
-                        # order columns
-                        cols = [key, "Units_cur", "Sales_cur", "Units_prev", "Sales_prev", "WoW Sales", "WoW Units", "%∆Sales"]
-                        return out[cols]
-
-                    vendor_decl_pdf = _declines_simple(cur_v, prev_v, "Vendor")
-                    retailer_decl_pdf = _declines_simple(cur_r, prev_r, "Retailer")
-
-                    # Format for PDF
-                    def _fmt_pct(x):
-                        try:
-                            return f"{float(x):+.0%}".replace("+", "")
-                        except Exception:
-                            return ""
-                    for _d in [vendor_decl_pdf, retailer_decl_pdf]:
-                        if _d is not None and not _d.empty:
-                            if "Units_cur" in _d.columns: _d["Units_cur"] = _d["Units_cur"].map(_fmt_pdf_int)
-                            if "Units_prev" in _d.columns: _d["Units_prev"] = _d["Units_prev"].map(_fmt_pdf_int)
-                            if "Sales_cur" in _d.columns: _d["Sales_cur"] = _d["Sales_cur"].map(_fmt_pdf_money)
-                            if "Sales_prev" in _d.columns: _d["Sales_prev"] = _d["Sales_prev"].map(_fmt_pdf_money)
-                            if "WoW Sales" in _d.columns: _d["WoW Sales"] = _d["WoW Sales"].map(_fmt_pdf_money)
-                            if "WoW Units" in _d.columns: _d["WoW Units"] = _d["WoW Units"].map(_fmt_pdf_int)
-                            if "%∆Sales" in _d.columns: _d["%∆Sales"] = _d["%∆Sales"].map(_fmt_pct)
-
-                    executive_takeaway, drivers_df, opportunities_df = _compute_wow_insights(df_all_raw)
-
-                    pdf_bytes = make_weekly_summary_pdf_bytes(
-                        "Weekly Summary",
-                        highlights,
-                        kpi_dict,
-                        top_r_pdf,
-                        top_v_pdf,
-                        top_s_pdf,
-                        movers_pdf,
-                        vendor_decl_pdf,
-                        retailer_decl_pdf,
-                        mom_pdf_export,
-                        df_all_raw,
-                        logo_path=LOGO_PATH if "LOGO_PATH" in globals() else None,
-                        executive_takeaway=executive_takeaway,
-                        drivers_df=drivers_df,
-                        opportunities_df=opportunities_df,
-                    )
-
-                    st.session_state.sb_weekly_pdf_bytes = pdf_bytes
-                    st.session_state.sb_weekly_pdf_name = f"Weekly_Summary_{pd.to_datetime(cur_end).date()}.pdf"
-                    st.success("PDF is ready below.")
-
-        except Exception as e:
-            st.error(f"PDF build failed: {e}")
-
-    if st.session_state.sb_weekly_pdf_bytes:
-        st.download_button(
-            "⬇️ Download Weekly Summary (PDF)",
-            data=st.session_state.sb_weekly_pdf_bytes,
-            file_name=st.session_state.sb_weekly_pdf_name or "Weekly_Summary.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-            key="sb_dl_weekly_summary_pdf",
-        )
+# (Sidebar PDF export removed — exports live in Executive Summary + Comparisons)
 
 # KPIs across top (always current calendar year)
 df_kpi = df_all.copy()
@@ -2123,6 +2017,20 @@ def render_comparison_retailer_vendor():
         d["Year"] = d["StartDate"].dt.year.astype(int)
         years = sorted(d["Year"].dropna().unique().tolist())
 
+
+        # Optional filters (apply to BOTH A and B)
+        with st.expander("Filters (optional)", expanded=False):
+            r_opts = sorted([str(x) for x in d.get("Retailer", pd.Series([], dtype="object")).dropna().unique().tolist() if str(x).strip()])
+            v_opts = sorted([str(x) for x in d.get("Vendor", pd.Series([], dtype="object")).dropna().unique().tolist() if str(x).strip()])
+            f_retailers = st.multiselect("Filter Retailer(s)", options=r_opts, default=st.session_state.get("cmp_filter_retailers", []), key="cmp_filter_retailers")
+            f_vendors = st.multiselect("Filter Vendor(s)", options=v_opts, default=st.session_state.get("cmp_filter_vendors", []), key="cmp_filter_vendors")
+
+        if f_retailers:
+            d = d[d["Retailer"].astype(str).isin([str(x) for x in f_retailers])].copy()
+        if f_vendors:
+            d = d[d["Vendor"].astype(str).isin([str(x) for x in f_vendors])].copy()
+
+
         mode = st.radio(
             "Compare type",
             options=["A vs B (Months)", "A vs B (Years)", "Multi-year (high/low highlight)", "Multi-month across years"],
@@ -2231,7 +2139,7 @@ def render_comparison_retailer_vendor():
             label_a = " + ".join(a_pick) if a_pick else "A"
             label_b = " + ".join(b_pick) if b_pick else "B"
             _render_a_vs_b(da, db, label_a, label_b)
-            st.session_state["cmp_ctx"] = {"a": da.copy(), "b": db.copy(), "label_a": label_a, "label_b": label_b, "value_col": "Sales"}
+            st.session_state["cmp_ctx"] = {"a": da.copy(), "b": db.copy(), "label_a": label_a, "label_b": label_b, "value_col": "Sales", "by": by, "filters": {"retailers": f_retailers, "vendors": f_vendors, "limit_by": by, "limit_values": sel}}
             return
 
         # -------------------------
@@ -2276,7 +2184,7 @@ def render_comparison_retailer_vendor():
             label_a = " + ".join([str(y) for y in years_a])
             label_b = " + ".join([str(y) for y in years_b])
             _render_a_vs_b(da, db, label_a, label_b)
-            st.session_state["cmp_ctx"] = {"a": da.copy(), "b": db.copy(), "label_a": label_a, "label_b": label_b, "value_col": "Sales"}
+            st.session_state["cmp_ctx"] = {"a": da.copy(), "b": db.copy(), "label_a": label_a, "label_b": label_b, "value_col": "Sales", "by": by, "filters": {"retailers": f_retailers, "vendors": f_vendors, "limit_by": by, "limit_values": sel}}
             return
 
 
@@ -2439,7 +2347,7 @@ def render_comparison_retailer_vendor():
             first = pairs[0]; last = pairs[-1]
             a_ctx = dd[(dd["Year"] == int(first[0])) & (dd["StartDate"].dt.month == int(first[1]))].copy()
             b_ctx = dd[(dd["Year"] == int(last[0])) & (dd["StartDate"].dt.month == int(last[1]))].copy()
-            st.session_state["cmp_ctx"] = {"a": a_ctx, "b": b_ctx, "label_a": first[2], "label_b": last[2], "value_col": metric}
+            st.session_state["cmp_ctx"] = {"a": a_ctx, "b": b_ctx, "label_a": first[2], "label_b": last[2], "value_col": metric, "by": by, "filters": {"retailers": f_retailers, "vendors": f_vendors, "limit_by": by, "limit_values": sel}}
             return
 
         # -------------------------
@@ -2481,7 +2389,7 @@ def render_comparison_retailer_vendor():
             # Context for Explain + One-pager: first vs last year
             a_ctx = dd[dd["Year"] == y_first].copy()
             b_ctx = dd[dd["Year"] == y_last].copy()
-            st.session_state["cmp_ctx"] = {"a": a_ctx, "b": b_ctx, "label_a": str(y_first), "label_b": str(y_last), "value_col": metric}
+            st.session_state["cmp_ctx"] = {"a": a_ctx, "b": b_ctx, "label_a": str(y_first), "label_b": str(y_last), "value_col": metric, "by": by, "filters": {"retailers": f_retailers, "vendors": f_vendors, "limit_by": by, "limit_values": sel}}
             st.session_state["movers_a_periods"] = [str(p) for p in sorted(a_df["MonthP"].unique().tolist())] if "MonthP" in a_df.columns else []
             st.session_state["movers_b_periods"] = [str(p) for p in sorted(b_df["MonthP"].unique().tolist())] if "MonthP" in b_df.columns else []
         except Exception:
@@ -6173,16 +6081,121 @@ def render_tab_exec():
                 st.caption("Multi-year table will appear when historical data is available.")
 
         st.markdown("---")
-        st.caption("Export a simple one-page summary (PDF) for sharing.")
-        if st.button("Prepare one-pager PDF", key="ex_onepager_btn"):
-            st.info("One-pager export ready in this build.")
+        st.markdown("### Executive Summary PDF Export")
+        st.caption("Exports will use exactly what you have selected above (Scope + selection + current View Year).")
+
+        # Persist the current Executive Summary dataset for other tabs/exports
+        try:
+            st.session_state["exec_export_scope"] = scope
+            st.session_state["exec_export_title"] = title
+            st.session_state["exec_export_df"] = d.copy()
+        except Exception:
+            pass
+
+        if "exec_onepager_pdf_bytes" not in st.session_state:
+            st.session_state.exec_onepager_pdf_bytes = None
+            st.session_state.exec_onepager_pdf_name = None
+
+        colA, colB = st.columns([1,1])
+        with colA:
+            build_btn = st.button("Build Executive One‑Pager (PDF)", use_container_width=True, key="ex_onepager_build_btn")
+        with colB:
+            include_table = st.checkbox("Include Top SKUs table", value=True, key="ex_onepager_include_table")
+
+        if build_btn:
+            try:
+                df_src = d.copy()
+                # Current vs previous week for deltas (within the same filtered dataset)
+                cur, prev, cur_start, cur_end = _get_current_and_prev_week(df_src)
+                sales_cur = float(cur["Sales"].sum()) if (cur is not None and not cur.empty and "Sales" in cur.columns) else float(df_src["Sales"].sum() if "Sales" in df_src.columns else 0.0)
+                units_cur = float(cur["Units"].sum()) if (cur is not None and not cur.empty and "Units" in cur.columns) else float(df_src["Units"].sum() if "Units" in df_src.columns else 0.0)
+
+                sales_prev = float(prev["Sales"].sum()) if (prev is not None and not prev.empty and "Sales" in prev.columns) else 0.0
+                units_prev = float(prev["Units"].sum()) if (prev is not None and not prev.empty and "Units" in prev.columns) else 0.0
+
+                wow_sales = sales_cur - sales_prev
+                wow_units = units_cur - units_prev
+                wow_sales_pct = (wow_sales / sales_prev) if sales_prev else None
+                wow_units_pct = (wow_units / units_prev) if units_prev else None
+
+                active_skus = int(df_src["SKU"].astype(str).nunique()) if "SKU" in df_src.columns else 0
+                vendors_n = int(df_src["Vendor"].astype(str).nunique()) if "Vendor" in df_src.columns else 0
+                retailers_n = int(df_src["Retailer"].astype(str).nunique()) if "Retailer" in df_src.columns else 0
+
+                subtitle = title
+                if cur is not None and not cur.empty and pd.notna(cur_start) and pd.notna(cur_end):
+                    subtitle = f"{title} • Week {pd.to_datetime(cur_start).date()} to {pd.to_datetime(cur_end).date()}"
+
+                def _money_delta(v, pct=None):
+                    s = _fmt_pdf_money(v)
+                    if pct is None:
+                        return s if s != "" else None
+                    try:
+                        return f"{s} ({pct*100:+.1f}%)"
+                    except Exception:
+                        return s
+
+                kpis = [
+                    ("Sales", _fmt_pdf_money(sales_cur), _money_delta(wow_sales, wow_sales_pct)),
+                    ("Units", _fmt_pdf_int(units_cur), (f"{_fmt_pdf_int(wow_units)} ({wow_units_pct*100:+.1f}%)" if wow_units_pct is not None else _fmt_pdf_int(wow_units))),
+                    ("Active SKUs", f"{active_skus:,}", None),
+                    ("Vendors", f"{vendors_n:,}", None),
+                    ("Retailers", f"{retailers_n:,}", None),
+                ]
+
+                bullets = []
+                if scope == "Vendor":
+                    bullets.append(f"Vendor focus: {st.session_state.get('ex_pick_v', '')}".strip())
+                elif scope == "Retailer":
+                    bullets.append(f"Retailer focus: {st.session_state.get('ex_pick_r', '')}".strip())
+
+                bullets.append(f"Total sales: {_fmt_pdf_money(sales_cur)} on {_fmt_pdf_int(units_cur)} units.")
+                if cur is not None and not cur.empty:
+                    bullets.append(f"WoW change: {_fmt_pdf_money(wow_sales)} sales, {_fmt_pdf_int(wow_units)} units.")
+                if "SKU" in df_src.columns:
+                    top_sku = df_src.groupby("SKU", as_index=False)["Sales"].sum().sort_values("Sales", ascending=False).head(1)
+                    if not top_sku.empty:
+                        bullets.append(f"Top SKU by sales: {str(top_sku['SKU'].iloc[0])} ({_fmt_pdf_money(top_sku['Sales'].iloc[0])}).")
+                if "Retailer" in df_src.columns:
+                    top_r = df_src.groupby("Retailer", as_index=False)["Sales"].sum().sort_values("Sales", ascending=False).head(1)
+                    if not top_r.empty:
+                        bullets.append(f"Top retailer by sales: {str(top_r['Retailer'].iloc[0])} ({_fmt_pdf_money(top_r['Sales'].iloc[0])}).")
+
+                table_df = None
+                if include_table:
+                    try:
+                        sold_pdf = df_src.groupby(["SKU","Vendor"], as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum"))
+                        sold_pdf = sold_pdf.sort_values("Sales", ascending=False, kind="mergesort").head(10).copy()
+                        sold_pdf["Units"] = sold_pdf["Units"].map(_fmt_pdf_int)
+                        sold_pdf["Sales"] = sold_pdf["Sales"].map(_fmt_pdf_money)
+                        table_df = sold_pdf[["SKU","Vendor","Units","Sales"]]
+                    except Exception:
+                        table_df = None
+
+                pdf_bytes = make_one_pager_pdf("Cornerstone Sales Dashboard — Executive One‑Pager", subtitle, kpis, [b for b in bullets if b], table_df)
+                st.session_state.exec_onepager_pdf_bytes = pdf_bytes
+                safe_name = re.sub(r"[^A-Za-z0-9_\-]+", "_", title).strip("_")
+                st.session_state.exec_onepager_pdf_name = f"Executive_OnePager_{safe_name}_{int(view_year)}.pdf"
+                st.success("Executive one‑pager is ready below.")
+            except Exception as e:
+                st.error(f"One‑pager build failed: {e}")
+
+        if st.session_state.exec_onepager_pdf_bytes:
+            st.download_button(
+                "⬇️ Download Executive One‑Pager (PDF)",
+                data=st.session_state.exec_onepager_pdf_bytes,
+                file_name=st.session_state.exec_onepager_pdf_name or "Executive_OnePager.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                key="ex_onepager_dl_btn",
+            )
 
         st.divider()
         st.markdown("### Weekly Summary Export")
         st.caption("One-click export of the current week highlights (Action Center) to Excel and PDF.")
 
-        if df_all is not None and not df_all.empty:
-            cur, prev, cur_start, cur_end = _get_current_and_prev_week(df_all_raw)
+        if d is not None and not d.empty:
+            cur, prev, cur_start, cur_end = _get_current_and_prev_week(d)
             if cur is not None and not cur.empty:
                 # Build the same core tables used in Action Center
                 cur_r = cur.groupby("Retailer", as_index=False)[["Units","Sales"]].sum()
@@ -6199,13 +6212,13 @@ def render_tab_exec():
                 movers["WoW Units"] = movers["Units_cur"] - movers["Units_prev"]
                 movers["_abs_wow_sales"] = movers["WoW Sales"].abs()
                 movers = movers.sort_values("_abs_wow_sales", ascending=False).head(25).drop(columns=["_abs_wow_sales"])
-                prior = df_all.copy()
+                prior = d.copy()
                 prior["EndDate"] = pd.to_datetime(prior["EndDate"], errors="coerce")
                 prior = prior[prior["EndDate"].notna()].copy()
                 prior = prior[prior["EndDate"] < cur_end]
                 new_skus = sorted(set(cur["SKU"].astype(str)) - set(prior["SKU"].astype(str)))
 
-                mom = compute_momentum_scores(df_all, window=8)
+                mom = compute_momentum_scores(d, window=8)
 
                 def _declines(cur_df, prev_df, key, min_prev_sales=1000.0, pct=-0.25):
                     if prev_df is None or prev_df.empty:
@@ -6451,7 +6464,7 @@ def render_tab_exec():
                     sections.append(("Momentum Leaders", mom_pdf[cols_mom].astype(str), None))
                 # Build professional PDF (3-page executive layout)
                 try:
-                    mom_pdf_export = compute_momentum_table(df_all, window=12).head(15).copy()
+                    mom_pdf_export = compute_momentum_table(d, window=12).head(15).copy()
                 except Exception:
                     mom_pdf_export = pd.DataFrame(columns=["SKU","Momentum","Up Weeks","Down Weeks","Units_Last","Sales_Last"])
 
@@ -6488,7 +6501,7 @@ def render_tab_exec():
                     f"WoW units change: {_fmt_pdf_int(wow_units)}.",
                 ]
 
-                executive_takeaway, drivers_df, opportunities_df = _compute_wow_insights(df_all_raw)
+                executive_takeaway, drivers_df, opportunities_df = _compute_wow_insights(d)
 
                 pdf_bytes = make_weekly_summary_pdf_bytes(
                     "Weekly Summary",
@@ -6501,7 +6514,7 @@ def render_tab_exec():
                     vendor_decl_pdf if "vendor_decl_pdf" in locals() else pd.DataFrame(),
                     retailer_decl_pdf if "retailer_decl_pdf" in locals() else pd.DataFrame(),
                     mom_pdf_export,
-                    df_all_raw,
+                    d,
                     logo_path=LOGO_PATH if "LOGO_PATH" in globals() else None,
                     executive_takeaway=executive_takeaway,
                     drivers_df=drivers_df,
