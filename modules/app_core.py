@@ -110,6 +110,112 @@ def make_comparison_pdf_bytes(
     except Exception:
         return b""
 
+
+def make_multi_year_pdf_bytes(
+    title: str,
+    subtitle: str,
+    table_df: pd.DataFrame,
+    years: list[int],
+    metric: str = "Sales",
+    logo_path: str | None = None,
+) -> bytes:
+    """Executive-style multi-year PDF.
+
+    This is a separate export from A-vs-B so we can faithfully include *all* selected years.
+    """
+    try:
+        from io import BytesIO
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.units import inch
+        from reportlab.lib import colors
+        from reportlab.platypus import (
+            SimpleDocTemplate,
+            Paragraph,
+            Spacer,
+            Table,
+            TableStyle,
+            Image,
+        )
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        import os as _os
+    except Exception:
+        return b""
+
+    styles = getSampleStyleSheet()
+    if "H1" not in styles:
+        styles.add(ParagraphStyle(name="H1", parent=styles["Heading1"], fontSize=16, leading=18, spaceAfter=8))
+    if "H2" not in styles:
+        styles.add(ParagraphStyle(name="H2", parent=styles["Heading2"], fontSize=12, leading=14, spaceAfter=6))
+    if "Body" not in styles:
+        styles.add(ParagraphStyle(name="Body", parent=styles["Normal"], fontSize=9.5, leading=12))
+
+    def _make_table(df: pd.DataFrame):
+        if df is None or getattr(df, "empty", True):
+            return Paragraph("No data.", styles["Body"])
+        disp = df.copy()
+        # Format columns similar to the executive PDF
+        for c in disp.columns:
+            cn = str(c).lower()
+            num = pd.to_numeric(disp[c], errors="coerce")
+            if not num.notna().any():
+                disp[c] = disp[c].astype(str)
+                continue
+            if "sales" in cn:
+                disp[c] = num.apply(lambda x: f"${x:,.2f}")
+            elif "unit" in cn or "qty" in cn:
+                disp[c] = num.apply(lambda x: f"{int(round(x)):,}")
+            else:
+                disp[c] = num.apply(lambda x: f"{x:,.2f}")
+
+        data = [list(disp.columns)] + disp.astype(str).values.tolist()
+        tbl = Table(data)
+        ts = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 9),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e5e7eb")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f9fafb")]),
+            ("FONTSIZE", (0, 1), (-1, -1), 8.5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]
+        for j, cn in enumerate(disp.columns):
+            cn_l = str(cn).lower()
+            if any(k in cn_l for k in ["sales", "unit", "%", "diff", "Δ"]):
+                ts.append(("ALIGN", (j, 0), (j, -1), "RIGHT"))
+        tbl.setStyle(TableStyle(ts))
+        return tbl
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=0.75 * inch, rightMargin=0.75 * inch, topMargin=0.75 * inch, bottomMargin=0.75 * inch)
+    story = []
+
+    # Header
+    header_cells = []
+    if logo_path and _os.path.exists(logo_path):
+        try:
+            header_cells.append(Image(logo_path, width=1.55 * inch, height=0.55 * inch))
+        except Exception:
+            header_cells.append(Paragraph("", styles["Body"]))
+    header_cells.append(Paragraph(f"<b>{html.escape(title)}</b><br/><font size=9 color='#6b7280'>{html.escape(subtitle)}</font>", styles["Body"]))
+    hdr = Table([header_cells], colWidths=[1.75 * inch, doc.width - 1.75 * inch])
+    hdr.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
+    story.append(hdr)
+    story.append(Spacer(1, 0.12 * inch))
+
+    yrs = ", ".join([str(y) for y in years])
+    story.append(Paragraph(f"Multi-year view ({html.escape(yrs)}) — Highlight metric: {html.escape(metric)}", styles["H2"]))
+    story.append(_make_table(table_df))
+
+    try:
+        doc.build(story)
+        return buf.getvalue()
+    except Exception:
+        return b""
+
     styles = getSampleStyleSheet()
     if "H1" not in styles:
         styles.add(ParagraphStyle(name="H1", parent=styles["Heading1"], fontSize=16, leading=18, spaceAfter=8))
@@ -214,12 +320,55 @@ def make_comparison_pdf_bytes(
     story.append(Spacer(1, 0.12 * inch))
 
     # KPI hero boxes
-    sales = (kpi or {}).get("Sales", {})
-    units = (kpi or {}).get("Units", {})
+    # Expected structure:
+    #   kpi = {
+    #     "Sales": {"A": "...", "B": "...", "Δ": "..."},
+    #     "Units": {"A": "...", "B": "...", "Δ": "..."},
+    #     "LabelA": "2025",
+    #     "LabelB": "2024",
+    #   }
+    # Backward-compat: if a flat dict is provided, fall back gracefully.
+    sales = (kpi or {}).get("Sales", {}) if isinstance((kpi or {}).get("Sales", {}), dict) else {}
+    units = (kpi or {}).get("Units", {}) if isinstance((kpi or {}).get("Units", {}), dict) else {}
+    label_a = (kpi or {}).get("LabelA", "A")
+    label_b = (kpi or {}).get("LabelB", "B")
+
+    if not sales and isinstance(kpi, dict):
+        # Try to reconstruct from legacy keys
+        sa = None
+        sb = None
+        ua = None
+        ub = None
+        for k, v in (kpi or {}).items():
+            if not isinstance(k, str):
+                continue
+            kl = k.lower()
+            if "total sales" in kl and sa is None:
+                sa = v
+            elif "total sales" in kl and sb is None:
+                sb = v
+            if "total units" in kl and ua is None:
+                ua = v
+            elif "total units" in kl and ub is None:
+                ub = v
+        sales = {"A": sa or "—", "B": sb or "—", "Δ": (kpi or {}).get("Sales Δ (A−B)", "")}
+        units = {"A": ua or "—", "B": ub or "—", "Δ": (kpi or {}).get("Units Δ (A−B)", "")}
     hero = Table(
         [[
-            Paragraph(f"<font size=9 color='#6b7280'>Sales</font><br/><font size=16><b>{html.escape(str(sales.get('A','—')))}</b></font><br/><font color='{_delta_color(sales.get('Δ','')).hexval()}'><b>{html.escape(str(sales.get('Δ','')))}</b></font>", styles["Body"]),
-            Paragraph(f"<font size=9 color='#6b7280'>Units</font><br/><font size=16><b>{html.escape(str(units.get('A','—')))}</b></font><br/><font color='{_delta_color(units.get('Δ','')).hexval()}'><b>{html.escape(str(units.get('Δ','')))}</b></font>", styles["Body"]),
+            Paragraph(
+                f"<font size=9 color='#6b7280'>Sales</font><br/>"
+                f"<font size=16><b>{html.escape(str(sales.get('A','—')))}</b></font>"
+                f"<br/><font size=9 color='#6b7280'>{html.escape(str(label_a))} vs {html.escape(str(label_b))}: {html.escape(str(sales.get('B','—')))}</font>"
+                f"<br/><font color='{_delta_color(sales.get('Δ','')).hexval()}'><b>{html.escape(str(sales.get('Δ','')))}</b></font>",
+                styles["Body"],
+            ),
+            Paragraph(
+                f"<font size=9 color='#6b7280'>Units</font><br/>"
+                f"<font size=16><b>{html.escape(str(units.get('A','—')))}</b></font>"
+                f"<br/><font size=9 color='#6b7280'>{html.escape(str(label_a))} vs {html.escape(str(label_b))}: {html.escape(str(units.get('B','—')))}</font>"
+                f"<br/><font color='{_delta_color(units.get('Δ','')).hexval()}'><b>{html.escape(str(units.get('Δ','')))}</b></font>",
+                styles["Body"],
+            ),
         ]],
         colWidths=[doc.width / 2.0, doc.width / 2.0],
     )
@@ -238,12 +387,7 @@ def make_comparison_pdf_bytes(
     story.append(KeepTogether([Paragraph("Top Increase SKUs", styles["H2"]), _make_table(top_increase, wow_col_name="Sales Δ")]))
     story.append(Spacer(1, 0.14 * inch))
     story.append(KeepTogether([Paragraph("Top Decrease SKUs", styles["H2"]), _make_table(top_decrease, wow_col_name="Sales Δ")]))
-    story.append(PageBreak())
-
-    story.append(Paragraph("Strategic Momentum", styles["H1"]))
-    story.append(Paragraph("Momentum Leaders (Period A: Last4 − Prev4)", styles["H2"]))
-    story.append(Spacer(1, 0.06 * inch))
-    story.append(KeepInFrame(doc.width, 8.5 * inch, [_make_table(momentum, wow_col_name="Momentum")], mode="shrink"))
+    # No momentum page for now (keep PDF focused on up/down changes)
 
     try:
         doc.build(story, onFirstPage=_on_page, onLaterPages=_on_page)
@@ -493,6 +637,36 @@ def render_comparison_extras(ctx: dict):
     # Executive-style Comparison PDF (matches Weekly Summary styling)
     # -----------------------------
     st.markdown("### Comparison PDF (Executive style)")
+
+    # If the user is in Multi-year mode (2..5 years), export a dedicated PDF that includes ALL selected years.
+    if ctx.get("mode") == "multi_year" and isinstance(ctx.get("multi_year_table"), pd.DataFrame):
+        try:
+            years_sel = ctx.get("multi_year_years") or []
+            years_sel = [int(y) for y in years_sel if str(y).strip().isdigit()]
+            tbl_my = ctx.get("multi_year_table")
+            if years_sel and tbl_my is not None and not tbl_my.empty:
+                subtitle_my = f"Years: {', '.join(map(str, years_sel))} • Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                pdf_my = make_multi_year_pdf_bytes(
+                    title="Multi-year Comparison",
+                    subtitle=subtitle_my,
+                    table_df=tbl_my,
+                    years=years_sel,
+                    metric=value_col if value_col in ("Sales", "Units") else "Sales",
+                    logo_path=LOGO_PATH if "LOGO_PATH" in globals() else None,
+                )
+                if pdf_my:
+                    st.download_button(
+                        "Download Multi-year PDF (Executive Style)",
+                        data=pdf_my,
+                        file_name=f"MultiYear_{'_'.join(map(str, years_sel))}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        key=f"dl_multi_year_pdf_{'_'.join(map(str, years_sel))}",
+                    )
+                else:
+                    st.caption("Multi-year PDF export unavailable.")
+        except Exception:
+            st.caption("Multi-year PDF export unavailable.")
     try:
         # Totals
         uA = float(a["Units"].sum()) if (not a.empty and "Units" in a.columns) else 0.0
@@ -504,13 +678,12 @@ def render_comparison_extras(ctx: dict):
         du = uA - uB
         ds = sA - sB
 
+        # KPI structure expected by the executive-style PDF
         kpi = {
-            f"Total Sales ({label_a})": fmt_currency(sA),
-            f"Total Sales ({label_b})": fmt_currency(sB),
-            "Sales Δ (A−B)": fmt_currency_signed(ds),
-            f"Total Units ({label_a})": fmt_int(uA),
-            f"Total Units ({label_b})": fmt_int(uB),
-            "Units Δ (A−B)": fmt_int_signed(du),
+            "LabelA": label_a,
+            "LabelB": label_b,
+            "Sales": {"A": fmt_currency(sA), "B": fmt_currency(sB), "Δ": fmt_currency_signed(ds)},
+            "Units": {"A": fmt_int(uA), "B": fmt_int(uB), "Δ": fmt_int_signed(du)},
         }
 
         # Retailers (ALL) table
@@ -534,8 +707,9 @@ def render_comparison_extras(ctx: dict):
             sku_tbl["Units Δ"] = sku_tbl["UnitsA"] - sku_tbl["UnitsB"]
             sku_tbl = sku_tbl.rename(columns={"SalesA": f"Sales {label_a}", "SalesB": f"Sales {label_b}", "UnitsA": f"Units {label_a}", "UnitsB": f"Units {label_b}"})
 
-        top_up = sku_tbl.sort_values("Sales Δ", ascending=False).head(10) if not sku_tbl.empty else pd.DataFrame()
-        top_dn = sku_tbl.sort_values("Sales Δ", ascending=True).head(10) if not sku_tbl.empty else pd.DataFrame()
+        # Keep page 2 compact: fewer rows so Drivers + Up + Down fit on one page
+        top_up = sku_tbl.sort_values("Sales Δ", ascending=False).head(8) if not sku_tbl.empty else pd.DataFrame()
+        top_dn = sku_tbl.sort_values("Sales Δ", ascending=True).head(8) if not sku_tbl.empty else pd.DataFrame()
 
         # Top 5 drivers (largest absolute Sales change)
         drivers = pd.DataFrame()
@@ -543,20 +717,8 @@ def render_comparison_extras(ctx: dict):
             drivers = sku_tbl.assign(_abs=sku_tbl["Sales Δ"].abs()).sort_values("_abs", ascending=False).drop(columns=["_abs"]).head(5)
 
         # Momentum (within period A): last4 vs prev4 weeks by SKU
+        # Momentum removed from PDF for now (keep it focused on up/down changes)
         momentum = pd.DataFrame()
-        df_m = a.copy() if not a.empty else pd.DataFrame()
-        if not df_m.empty and "StartDate" in df_m.columns and "SKU" in df_m.columns:
-            df_m["StartDate"] = pd.to_datetime(df_m["StartDate"], errors="coerce")
-            df_m = df_m.dropna(subset=["StartDate"])
-            weeks = sorted(df_m["StartDate"].unique())
-            if len(weeks) >= 8:
-                last4 = weeks[-4:]
-                prev4 = weeks[-8:-4]
-                g_last = df_m[df_m["StartDate"].isin(last4)].groupby("SKU", as_index=False).agg(Sales_Last=("Sales","sum"), Units_Last=("Units","sum"))
-                g_prev = df_m[df_m["StartDate"].isin(prev4)].groupby("SKU", as_index=False).agg(Sales_Prev=("Sales","sum"), Units_Prev=("Units","sum"))
-                momentum = g_last.merge(g_prev, on="SKU", how="outer").fillna(0.0)
-                momentum["Momentum"] = momentum["Sales_Last"] - momentum["Sales_Prev"]
-                momentum = momentum.sort_values("Momentum", ascending=False).head(15)
 
         subtitle = f"{label_a} vs {label_b} • Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         pdf_bytes = make_comparison_pdf_bytes(
@@ -2822,7 +2984,16 @@ def run_app():
                 # Context for Explain + One-pager: first vs last year
                 a_ctx = dd[dd["Year"] == y_first].copy()
                 b_ctx = dd[dd["Year"] == y_last].copy()
-                st.session_state["cmp_ctx"] = {"a": a_ctx, "b": b_ctx, "label_a": str(y_first), "label_b": str(y_last), "value_col": metric}
+                st.session_state["cmp_ctx"] = {
+                    "a": a_ctx,
+                    "b": b_ctx,
+                    "label_a": str(y_first),
+                    "label_b": str(y_last),
+                    "value_col": metric,
+                    "mode": "multi_year",
+                    "multi_year_years": years_pick,
+                    "multi_year_by": by,
+                }
                 st.session_state["movers_a_periods"] = [str(p) for p in sorted(a_df["MonthP"].unique().tolist())] if "MonthP" in a_df.columns else []
                 st.session_state["movers_b_periods"] = [str(p) for p in sorted(b_df["MonthP"].unique().tolist())] if "MonthP" in b_df.columns else []
             except Exception:
@@ -2856,6 +3027,13 @@ def run_app():
             for y in years_pick:
                 cols += [f"Units_{y}", f"Sales_{y}"]
             disp = out[cols].copy()
+
+            # Store the full multi-year table for PDF export
+            try:
+                if isinstance(st.session_state.get("cmp_ctx"), dict):
+                    st.session_state["cmp_ctx"]["multi_year_table"] = disp.copy()
+            except Exception:
+                pass
 
             # Highlight: highest and lowest across selected years for chosen metric
             metric_cols = [f"{metric}_{y}" for y in years_pick if f"{metric}_{y}" in disp.columns]
