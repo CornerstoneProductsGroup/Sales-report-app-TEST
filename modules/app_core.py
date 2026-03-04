@@ -100,9 +100,6 @@ def make_comparison_pdf_bytes(
             Table,
             TableStyle,
             Image,
-            KeepTogether,
-            KeepInFrame,
-            PageBreak,
         )
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         import re as _re
