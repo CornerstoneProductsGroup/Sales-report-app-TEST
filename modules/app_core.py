@@ -225,7 +225,7 @@ def render_comparison_extras(ctx: dict):
         ga = a.groupby("SKU", as_index=False).agg(A=(col, "sum")) if (not a.empty and "SKU" in a.columns and col in a.columns) else pd.DataFrame(columns=["SKU", "A"])
         gb = b.groupby("SKU", as_index=False).agg(B=(col, "sum")) if (not b.empty and "SKU" in b.columns and col in b.columns) else pd.DataFrame(columns=["SKU", "B"])
         g = ga.merge(gb, on="SKU", how="outer").fillna(0.0)
-        g["Delta"] = g["B"] - g["A"]
+        g["Delta"] = g["A"] - g["B"]
 
         up = g.sort_values("Delta", ascending=False).head(15).copy()
         down = g.sort_values("Delta", ascending=True).head(15).copy()
@@ -278,7 +278,7 @@ def render_comparison_extras(ctx: dict):
             da = a.groupby(dim, as_index=False).agg(A=(metric_col, "sum")) if (not a.empty and dim in a.columns and metric_col in a.columns) else pd.DataFrame(columns=[dim, "A"])
             db = b.groupby(dim, as_index=False).agg(B=(metric_col, "sum")) if (not b.empty and dim in b.columns and metric_col in b.columns) else pd.DataFrame(columns=[dim, "B"])
             t = da.merge(db, on=dim, how="outer").fillna(0.0)
-            t["Delta"] = t["B"] - t["A"]
+            t["Delta"] = t["A"] - t["B"]
             up = t.sort_values("Delta", ascending=False).head(3)
             dn = t.sort_values("Delta", ascending=True).head(3)
             return up, dn
@@ -3509,7 +3509,7 @@ def run_app():
             ga = a.groupby("SKU", as_index=False).agg(A=(value_col,"sum"))
             gb = b.groupby("SKU", as_index=False).agg(B=(value_col,"sum"))
             sku = ga.merge(gb, on="SKU", how="outer").fillna(0.0)
-            sku["Delta"] = sku["B"] - sku["A"]
+            sku["Delta"] = sku["A"] - sku["B"]
             sku["Pct"] = sku["Delta"] / sku["A"].replace(0, np.nan)
 
             lost = sku[(sku["A"] > 0) & (sku["B"] == 0)].copy().sort_values("A", ascending=False).head(200)
@@ -3519,7 +3519,7 @@ def run_app():
             ra = a.groupby(["SKU","Retailer"], as_index=False).agg(A=(value_col,"sum"))
             rb = b.groupby(["SKU","Retailer"], as_index=False).agg(B=(value_col,"sum"))
             rr = ra.merge(rb, on=["SKU","Retailer"], how="outer").fillna(0.0)
-            rr["Delta"] = rr["B"] - rr["A"]
+            rr["Delta"] = rr["A"] - rr["B"]
             lost_retail = rr[(rr["A"] > 0) & (rr["B"] == 0)].copy().sort_values("A", ascending=False).head(300)
 
             try:
@@ -4183,7 +4183,7 @@ def run_app():
             va = a.groupby("Vendor", as_index=False).agg(A=(value_col, "sum"))
             vb = b.groupby("Vendor", as_index=False).agg(B=(value_col, "sum"))
             v = va.merge(vb, on="Vendor", how="outer").fillna(0.0)
-            v["Delta"] = v["B"] - v["A"]
+            v["Delta"] = v["A"] - v["B"]
             v = v.sort_values("Delta")
 
             def _fmt(vv):
@@ -4205,7 +4205,7 @@ def run_app():
             sa = a.groupby("SKU", as_index=False).agg(A=(value_col, "sum"))
             sb = b.groupby("SKU", as_index=False).agg(B=(value_col, "sum"))
             sku = sa.merge(sb, on="SKU", how="outer").fillna(0.0)
-            sku["Delta"] = sku["B"] - sku["A"]
+            sku["Delta"] = sku["A"] - sku["B"]
 
             pos = sku[sku["Delta"] > 0].sort_values("Delta", ascending=False)
             if not pos.empty:
