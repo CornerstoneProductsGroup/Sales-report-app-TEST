@@ -312,24 +312,255 @@ def render_comparison_extras(ctx: dict):
     # -----------------------------
     # One-page PDF
     # -----------------------------
-    st.markdown("### One-page summary PDF")
+    st.markdown("### Comparison PDF (Executive style)")
     try:
+        # Totals
         uA = float(a["Units"].sum()) if (not a.empty and "Units" in a.columns) else 0.0
         uB = float(b["Units"].sum()) if (not b.empty and "Units" in b.columns) else 0.0
         sA = float(a["Sales"].sum()) if (not a.empty and "Sales" in a.columns) else 0.0
         sB = float(b["Sales"].sum()) if (not b.empty and "Sales" in b.columns) else 0.0
-        kpis = [
-            ("Units", fmt_int(uA), fmt_int(uB), fmt_int_signed(uB - uA)),
-            ("Sales", fmt_currency(sA), fmt_currency(sB), fmt_currency_signed(sB - sA)),
-        ]
-        subtitle = f"{label_a} vs {label_b} • Metric: {col} • Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        pdf_bytes = make_one_pager_pdf("Sales Dashboard – Comparison One-pager", subtitle, kpis, (insights[:8] + driver_lines)[:12], None)
+        du = uA - uB
+        ds = sA - sB
+        kpi = {
+            f"Sales ({label_a})": fmt_currency(sA),
+            f"Sales ({label_b})": fmt_currency(sB),
+            "Sales Δ (A−B)": fmt_currency_signed(ds),
+            f"Units ({label_a})": fmt_int(uA),
+            f"Units ({label_b})": fmt_int(uB),
+            "Units Δ (A−B)": fmt_int_signed(du),
+        }
+
+        # Retailers table (all)
+        ra = a.groupby("Retailer", as_index=False).agg(Sales_A=("Sales","sum"), Units_A=("Units","sum")) if (not a.empty and "Retailer" in a.columns) else pd.DataFrame(columns=["Retailer","Sales_A","Units_A"])
+        rb = b.groupby("Retailer", as_index=False).agg(Sales_B=("Sales","sum"), Units_B=("Units","sum")) if (not b.empty and "Retailer" in b.columns) else pd.DataFrame(columns=["Retailer","Sales_B","Units_B"])
+        r = ra.merge(rb, on="Retailer", how="outer").fillna(0.0)
+        r["Sales Δ"] = r["Sales_A"] - r["Sales_B"]
+        r["Units Δ"] = r["Units_A"] - r["Units_B"]
+        r = r.sort_values("Sales_A", ascending=False)
+
+        # SKU deltas
+        sa = a.groupby("SKU", as_index=False).agg(Sales_A=("Sales","sum"), Units_A=("Units","sum")) if (not a.empty and "SKU" in a.columns) else pd.DataFrame(columns=["SKU","Sales_A","Units_A"])
+        sb = b.groupby("SKU", as_index=False).agg(Sales_B=("Sales","sum"), Units_B=("Units","sum")) if (not b.empty and "SKU" in b.columns) else pd.DataFrame(columns=["SKU","Sales_B","Units_B"])
+        sk = sa.merge(sb, on="SKU", how="outer").fillna(0.0)
+        sk["Sales Δ"] = sk["Sales_A"] - sk["Sales_B"]
+        sk["Units Δ"] = sk["Units_A"] - sk["Units_B"]
+        sk = sk.sort_values("Sales Δ", ascending=False)
+        inc = sk.head(10).copy()
+        dec = sk.sort_values("Sales Δ", ascending=True).head(10).copy()
+        drv = sk.assign(abs_change=(sk["Sales Δ"].abs())).sort_values("abs_change", ascending=False).head(5).drop(columns=["abs_change"])
+
+        # Momentum: if we have weekly dates in A, compute last-12-week up/down counts from A selection
+        mom = pd.DataFrame()
+        try:
+            if "StartDate" in a.columns and "SKU" in a.columns:
+                mom = compute_momentum_table(a, weeks=12).head(15)
+        except Exception:
+            mom = pd.DataFrame()
+
+        subtitle = f"{label_a} vs {label_b} • Δ = A − B • Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        pdf_bytes = make_comparison_summary_pdf_bytes(
+            "Comparison Summary",
+            subtitle,
+            kpi=kpi,
+            retailers=r,
+            top_increase=inc,
+            top_decrease=dec,
+            drivers=drv,
+            momentum=mom,
+            logo_path=LOGO_PATH if "LOGO_PATH" in globals() else None,
+        )
         if pdf_bytes:
-            st.download_button("Prepare one-page PDF", data=pdf_bytes, file_name="comparison_one_pager.pdf", mime="application/pdf")
+            st.download_button("Build Comparison PDF", data=pdf_bytes, file_name="comparison_summary.pdf", mime="application/pdf")
         else:
             st.caption("PDF export unavailable (ReportLab missing).")
     except Exception:
         st.caption("PDF export unavailable.")
+
+def make_comparison_summary_pdf_bytes(title: str,
+                                      subtitle: str,
+                                      kpi: dict,
+                                      retailers: pd.DataFrame,
+                                      top_increase: pd.DataFrame,
+                                      top_decrease: pd.DataFrame,
+                                      drivers: pd.DataFrame,
+                                      momentum: pd.DataFrame,
+                                      logo_path: str = None) -> bytes:
+    """Executive-style comparison PDF that matches the Weekly Summary visual system."""
+    try:
+        from io import BytesIO
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.units import inch
+        from reportlab.lib import colors
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.pdfgen import canvas as pdfcanvas
+        from datetime import datetime
+        import os as _os
+        import math
+    except Exception:
+        return b"""
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="H1", parent=styles["Heading1"], fontSize=16, leading=18, spaceAfter=8))
+    styles.add(ParagraphStyle(name="H2", parent=styles["Heading2"], fontSize=12, leading=14, spaceAfter=6))
+    styles.add(ParagraphStyle(name="Body", parent=styles["Normal"], fontSize=9.5, leading=12))
+
+    def _wow_color_num(x):
+        try:
+            if x is None or (isinstance(x, float) and (math.isnan(x) or math.isinf(x))):
+                return colors.HexColor("#111827")
+            v = float(x)
+            if v > 0:
+                return colors.HexColor("#2ecc71")
+            if v < 0:
+                return colors.HexColor("#e74c3c")
+        except Exception:
+            pass
+        return colors.HexColor("#111827")
+
+    def _make_table(df: pd.DataFrame, header_bg="#111827", max_rows=999, col_widths=None, delta_cols=None):
+        if df is None or df.empty:
+            return Paragraph("No data.", styles["Body"])
+        disp = df.copy().head(max_rows)
+
+        # Format numbers to match Weekly Summary
+        def _fmt_currency(v):
+            try:
+                v = float(v)
+            except Exception:
+                return "—"
+            return f"-${abs(v):,.2f}" if v < 0 else f"${v:,.2f}"
+        def _fmt_int(v):
+            try:
+                return f"{int(round(float(v))):,}"
+            except Exception:
+                return "—"
+
+        for c in disp.columns:
+            lc = str(c).lower()
+            s = pd.to_numeric(disp[c], errors="coerce")
+            if not s.notna().any():
+                disp[c] = disp[c].astype(str)
+                continue
+            if "sale" in lc or "revenue" in lc or "$" in lc:
+                disp[c] = s.map(_fmt_currency)
+            elif "unit" in lc or "qty" in lc:
+                disp[c] = s.map(_fmt_int)
+            elif "delta" in lc or "Δ" in lc or "diff" in lc:
+                # keep sign for deltas
+                disp[c] = s.map(lambda v: f"-{_fmt_currency(abs(v))[1:]}" if v < 0 and ("sale" in lc or "$" in lc) else (f"+{_fmt_currency(v)}" if v>0 and ("sale" in lc or "$" in lc) else (f"-{abs(v):,.2f}" if v<0 else f"+{v:,.2f}" if v>0 else "0")))
+
+        data = [disp.columns.tolist()] + disp.values.tolist()
+        tbl = Table(data, hAlign="LEFT", colWidths=col_widths)
+        ts = [
+            ("BACKGROUND",(0,0),(-1,0), colors.HexColor(header_bg)),
+            ("TEXTCOLOR",(0,0),(-1,0), colors.white),
+            ("FONTNAME",(0,0),(-1,0), "Helvetica-Bold"),
+            ("FONTSIZE",(0,0),(-1,0), 9),
+            ("GRID",(0,0),(-1,-1), 0.25, colors.HexColor("#d1d5db")),
+            ("FONTNAME",(0,1),(-1,-1), "Helvetica"),
+            ("FONTSIZE",(0,1),(-1,-1), 8),
+            ("ROWBACKGROUNDS",(0,1),(-1,-1), [colors.white, colors.HexColor("#f9fafb")]),
+            ("VALIGN",(0,0),(-1,-1), "TOP"),
+            ("LEFTPADDING",(0,0),(-1,-1), 4),
+            ("RIGHTPADDING",(0,0),(-1,-1), 4),
+            ("TOPPADDING",(0,0),(-1,-1), 3),
+            ("BOTTOMPADDING",(0,0),(-1,-1), 3),
+        ]
+        # Colorize delta columns (like Weekly Summary)
+        if delta_cols:
+            for dc in delta_cols:
+                if dc in df.columns:
+                    j = df.columns.get_loc(dc)
+                    for r in range(1, len(data)):
+                        raw = pd.to_numeric(df.iloc[r-1, j], errors="coerce")
+                        col = _wow_color_num(raw if pd.notna(raw) else 0.0)
+                        ts.append(("TEXTCOLOR", (j, r), (j, r), col))
+                        ts.append(("FONTNAME", (j, r), (j, r), "Helvetica-Bold"))
+        tbl.setStyle(TableStyle(ts))
+        return tbl
+
+    generated = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    def _on_page(canv: pdfcanvas.Canvas, doc):
+        canv.saveState()
+        w, h = letter
+        canv.setFillColor(colors.HexColor("#111827"))
+        canv.rect(0, h-0.65*inch, w, 0.65*inch, fill=1, stroke=0)
+
+        if logo_path and _os.path.exists(logo_path):
+            try:
+                canv.drawImage(logo_path, 0.55*inch, h-0.60*inch, width=1.3*inch, height=0.45*inch, mask='auto', preserveAspectRatio=True, anchor='sw')
+            except Exception:
+                pass
+
+        canv.setFillColor(colors.white)
+        canv.setFont("Helvetica-Bold", 12)
+        canv.drawString(2.1*inch, h-0.40*inch, title)
+
+        canv.setFont("Helvetica", 9)
+        canv.drawRightString(w-0.55*inch, h-0.40*inch, f"Generated: {generated}")
+
+        canv.setFillColor(colors.HexColor("#6b7280"))
+        canv.setFont("Helvetica", 8)
+        canv.drawString(0.55*inch, 0.45*inch, "Cornerstone Products Group – Confidential (Internal Use Only)")
+        canv.drawRightString(w-0.55*inch, 0.45*inch, f"Page {doc.page}")
+        canv.restoreState()
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter,
+                            leftMargin=0.55*inch, rightMargin=0.55*inch,
+                            topMargin=0.85*inch, bottomMargin=0.7*inch)
+    story = []
+    story.append(Spacer(1, 0.15*inch))
+    story.append(Paragraph("Comparison Snapshot", styles["H1"]))
+    story.append(Paragraph(subtitle, styles["Body"]))
+    story.append(Spacer(1, 0.18*inch))
+
+    # KPI panel (matches Weekly Summary's simple table KPIs)
+    kpi_lines = [[str(k), str(v)] for k, v in (kpi or {}).items()]
+    if not kpi_lines:
+        kpi_lines = [["Sales", "—"], ["Units", "—"], ["Δ Sales", "—"], ["Δ Units", "—"]]
+    kpi_tbl = Table(kpi_lines, colWidths=[2.3*inch, 1.7*inch])
+    kpi_tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,0), colors.HexColor("#111827")),
+        ("TEXTCOLOR",(0,0),(-1,0), colors.white),
+        ("FONTNAME",(0,0),(-1,0), "Helvetica-Bold"),
+        ("FONTSIZE",(0,0),(-1,0), 9),
+        ("GRID",(0,0),(-1,-1), 0.25, colors.HexColor("#d1d5db")),
+        ("FONTNAME",(0,1),(-1,-1), "Helvetica"),
+        ("FONTSIZE",(0,1),(-1,-1), 9),
+        ("ROWBACKGROUNDS",(0,1),(-1,-1), [colors.white, colors.HexColor("#f9fafb")]),
+        ("LEFTPADDING",(0,0),(-1,-1), 6),
+        ("RIGHTPADDING",(0,0),(-1,-1), 6),
+        ("TOPPADDING",(0,0),(-1,-1), 4),
+        ("BOTTOMPADDING",(0,0),(-1,-1), 4),
+    ]))
+    story.append(kpi_tbl)
+    story.append(Spacer(1, 0.22*inch))
+
+    story.append(Paragraph("All Retailers", styles["H2"]))
+    story.append(_make_table(retailers, max_rows=999, delta_cols=[c for c in retailers.columns if "Δ" in str(c) or "Delta" in str(c)]))
+    story.append(PageBreak())
+
+    story.append(Paragraph("Operational Movement", styles["H1"]))
+    story.append(Paragraph("Top 5 Drivers", styles["H2"]))
+    story.append(_make_table(drivers, max_rows=5, delta_cols=[c for c in drivers.columns if "Δ" in str(c) or "Delta" in str(c)]))
+    story.append(Spacer(1, 0.15*inch))
+
+    story.append(Paragraph("Top Increases", styles["H2"]))
+    story.append(_make_table(top_increase, max_rows=10, delta_cols=[c for c in top_increase.columns if "Δ" in str(c) or "Delta" in str(c)]))
+    story.append(Spacer(1, 0.15*inch))
+
+    story.append(Paragraph("Top Decreases", styles["H2"]))
+    story.append(_make_table(top_decrease, max_rows=10, delta_cols=[c for c in top_decrease.columns if "Δ" in str(c) or "Delta" in str(c)]))
+    story.append(PageBreak())
+
+    story.append(Paragraph("Strategic Momentum", styles["H1"]))
+    story.append(_make_table(momentum, max_rows=15, delta_cols=None))
+
+    doc.build(story, onFirstPage=_on_page, onLaterPages=_on_page)
+    return buf.getvalue()
 
 def make_one_pager_pdf(title: str, subtitle: str, kpis: list, bullets: list[str], table_df: pd.DataFrame|None) -> bytes:
     try:
@@ -496,7 +727,6 @@ def load_year_locks() -> set[int]:
             return set(int(y) for y in years)
     except Exception:
         pass
-    return set()
 
 with st.sidebar:
     st.header("Options")
@@ -511,6 +741,7 @@ with st.sidebar:
     # Use the same year for filename date parsing to keep behavior consistent and predictable
     year = int(view_year)
 
+    return set()
 
 def save_year_locks(locked_years: set[int]) -> None:
     try:
@@ -1570,7 +1801,7 @@ view_year = st.session_state.get('view_year', year)
 
 
 # Load vendor map (persistent)
-BUNDLED_VENDOR_MAP = Path(__file__).parent / "data" / "vendor_map.xlsx"
+BUNDLED_VENDOR_MAP = Path(__file__).parent / "vendor_map.xlsx"
 
 # If a default vendor map hasn't been set yet, seed it from the bundled file in the repo.
 try:
@@ -1578,9 +1809,6 @@ try:
         DEFAULT_VENDOR_MAP.write_bytes(BUNDLED_VENDOR_MAP.read_bytes())
 except Exception:
     pass
-
-# Sidebar is minimal; vendor map uploads are handled in Data Center/Admin.
-vm_upload = None
 
 if vm_upload is not None:
     tmp = DATA_DIR / "_session_vendor_map.xlsx"
@@ -4058,33 +4286,25 @@ def make_totals_tables(base: pd.DataFrame, group_col: str, tf_weeks, avg_weeks):
 # -------------------------
 # Tabs (top navigation)
 # -------------------------
-(tab_overview,
- tab_totals_dash,
- tab_momentum,
- tab_action_center,
- tab_top_skus,
- tab_exec,
- tab_comparisons,
- tab_wow_exc,
- tab_sku_intel,
- tab_forecasting,
- tab_year_summary,
- tab_alerts,
- tab_data_mgmt) = st.tabs([
+(tab_overview, tab_explorer, tab_comparisons, tab_data) = st.tabs([
     "Overview",
-    "Totals Dashboards",
-    "Momentum",
-    "Action Center",
-    "Top SKUs",
-    "Executive Summary",
+    "Explorer",
     "Comparisons",
-    "WoW Exceptions",
-    "SKU Intelligence",
-    "Forecasting",
-    "Year Summary",
-    "Alerts",
-    "Data Management",
+    "Data & Settings",
 ])
+
+# Sub-tabs (created inside Explorer / Data & Settings at render time)
+tab_totals_dash = None
+tab_momentum = None
+tab_action_center = None
+tab_top_skus = None
+tab_exec = None
+tab_wow_exc = None
+tab_sku_intel = None
+tab_forecasting = None
+tab_year_summary = None
+tab_alerts = None
+tab_data_mgmt = None
 
 
 
@@ -7163,27 +7383,47 @@ def make_simple_pdf_bytes(title: str, lines: list[str], table_df: pd.DataFrame|N
 
 render_tab_overview()
 
-render_tab_action_center()
+with tab_explorer:
+    (tab_exec, tab_totals_dash, tab_momentum, tab_action_center, tab_top_skus, tab_wow_exc, tab_sku_intel, tab_forecasting, tab_year_summary, tab_alerts) = st.tabs([
+        "Executive Summary",
+        "Totals Dashboards",
+        "Momentum",
+        "Action Center",
+        "Top SKUs",
+        "WoW Exceptions",
+        "SKU Intelligence",
+        "Forecasting",
+        "Year Summary",
+        "Alerts",
+    ])
+    # Make sub-tabs visible to existing render functions
+    globals().update({
+        "tab_exec": tab_exec,
+        "tab_totals_dash": tab_totals_dash,
+        "tab_momentum": tab_momentum,
+        "tab_action_center": tab_action_center,
+        "tab_top_skus": tab_top_skus,
+        "tab_wow_exc": tab_wow_exc,
+        "tab_sku_intel": tab_sku_intel,
+        "tab_forecasting": tab_forecasting,
+        "tab_year_summary": tab_year_summary,
+        "tab_alerts": tab_alerts,
+    })
 
-render_tab_momentum()
-
-
-render_tab_totals_dash()
-
-render_tab_top_skus()
-
-render_tab_wow_exc()
-
-render_tab_exec()
+    render_tab_exec()
+    render_tab_totals_dash()
+    render_tab_momentum()
+    render_tab_action_center()
+    render_tab_top_skus()
+    render_tab_wow_exc()
+    render_tab_sku_intel()
+    render_tab_forecasting()
+    render_tab_year_summary()
+    render_tab_alerts()
 
 render_tab_comparisons()
 
-render_tab_sku_intel()
-
-render_tab_forecasting()
-
-render_tab_alerts()
-
-render_tab_data_mgmt()
-
-render_tab_year_summary()
+with tab_data:
+    tab_data_mgmt = tab_data
+    globals().update({"tab_data_mgmt": tab_data_mgmt})
+    render_tab_data_mgmt()
