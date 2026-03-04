@@ -1570,7 +1570,7 @@ view_year = st.session_state.get('view_year', year)
 
 
 # Load vendor map (persistent)
-BUNDLED_VENDOR_MAP = Path(__file__).parent / "vendor_map.xlsx"
+BUNDLED_VENDOR_MAP = Path(__file__).parent / "data" / "vendor_map.xlsx"
 
 # If a default vendor map hasn't been set yet, seed it from the bundled file in the repo.
 try:
@@ -1578,6 +1578,9 @@ try:
         DEFAULT_VENDOR_MAP.write_bytes(BUNDLED_VENDOR_MAP.read_bytes())
 except Exception:
     pass
+
+# Sidebar is minimal; vendor map uploads are handled in Data Center/Admin.
+vm_upload = None
 
 if vm_upload is not None:
     tmp = DATA_DIR / "_session_vendor_map.xlsx"
