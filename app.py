@@ -496,6 +496,7 @@ def load_year_locks() -> set[int]:
             return set(int(y) for y in years)
     except Exception:
         pass
+    return set()
 
 with st.sidebar:
     st.header("Options")
@@ -510,7 +511,6 @@ with st.sidebar:
     # Use the same year for filename date parsing to keep behavior consistent and predictable
     year = int(view_year)
 
-    return set()
 
 def save_year_locks(locked_years: set[int]) -> None:
     try:
