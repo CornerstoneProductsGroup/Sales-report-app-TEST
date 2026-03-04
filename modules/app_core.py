@@ -391,10 +391,18 @@ def render_comparison_extras(ctx: dict):
             momentum=momentum,
             logo_path=LOGO_PATH if "LOGO_PATH" in globals() else None,
         )
+
         if pdf_bytes:
-            st.download_button("Build Comparison PDF", data=pdf_bytes, file_name="comparison_summary.pdf", mime="application/pdf")
+            st.download_button(
+                "Download Comparison PDF (Executive Style)",
+                data=pdf_bytes,
+                file_name=f"Comparison_{label_a}_vs_{label_b}.pdf".replace(" ", "_"),
+                mime="application/pdf",
+                use_container_width=True,
+                key=f"dl_cmp_pdf_{label_a}_{label_b}",
+            )
         else:
-            st.caption("PDF export unavailable.")
+            st.caption("PDF export unavailable (ReportLab missing or no data).")
     except Exception:
         st.caption("PDF export unavailable.")
 
