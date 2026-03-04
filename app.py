@@ -588,6 +588,7 @@ def make_one_pager_pdf(title: str, subtitle: str, kpis: list, bullets: list[str]
 
 
 
+
 def make_comparison_pdf_v2(title: str, subtitle: str,
                            totals: dict,
                            retailer_tbl: pd.DataFrame,
@@ -596,16 +597,24 @@ def make_comparison_pdf_v2(title: str, subtitle: str,
                            drivers: pd.DataFrame,
                            momentum: pd.DataFrame) -> bytes:
     """
-    Two-page comparison PDF that respects current filters.
-    totals keys expected:
-      SalesA, SalesB, SalesDiff, SalesPct
-      UnitsA, UnitsB, UnitsDiff, UnitsPct
+    Executive-style comparison PDF (matches the Weekly Summary PDF look & table styling).
+
+    Layout:
+      Page 1: Comparison Snapshot (KPI panel + Top Retailers)
+      Page 2: Operational Movement (Top Drivers + Top Increases/Decreases SKUs)
+      Page 3: Strategic Momentum (Momentum Leaders)
     """
     try:
+        from io import BytesIO
         from reportlab.lib.pagesizes import letter
-        from reportlab.pdfgen import canvas
         from reportlab.lib.units import inch
         from reportlab.lib import colors
+        from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+                                        Image, KeepTogether, KeepInFrame, PageBreak)
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.pdfgen import canvas as pdfcanvas
+        from datetime import datetime
+        import os as _os
     except Exception:
         return b""
 
@@ -613,7 +622,7 @@ def make_comparison_pdf_v2(title: str, subtitle: str,
         try:
             v = float(v)
         except Exception:
-            return str(v)
+            return "—"
         s = f"${abs(v):,.2f}"
         return f"-{s}" if v < 0 else s
 
@@ -621,1752 +630,337 @@ def make_comparison_pdf_v2(title: str, subtitle: str,
         try:
             v = float(v)
         except Exception:
-            return str(v)
+            return "—"
         return f"{int(round(v)):,.0f}"
 
     def _pct(v):
         try:
             if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
-                return ""
+                return "—"
             return f"{float(v)*100:+.1f}%"
         except Exception:
-            return ""
-
-    def _delta_color(v):
-        try:
-            v = float(v)
-        except Exception:
-            return colors.black
-        if v > 0:
-            return colors.HexColor("#1a7f37")
-        if v < 0:
-            return colors.HexColor("#c62828")
-        return colors.black
-
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=letter)
-    w, h = letter
-    x0 = 0.75 * inch
-
-    # ---------------------------
-    # Page 1: header + totals + drivers
-    # ---------------------------
-    y = h - 0.75 * inch
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(x0, y, title)
-    y -= 0.26 * inch
-    c.setFont("Helvetica", 10)
-    c.setFillColor(colors.HexColor("#333333"))
-    c.drawString(x0, y, subtitle[:160])
-    c.setFillColor(colors.black)
-    y -= 0.35 * inch
-
-    # Big totals boxes (Sales, Units)
-    box_w = (w - 1.5*inch) / 2.0
-    box_h = 1.05 * inch
-
-    def _tot_box(ix, label, a_val, b_val, d_val, p_val):
-        bx = x0 + ix * box_w
-        by = y
-        c.setStrokeColor(colors.lightgrey)
-        c.setLineWidth(1)
-        c.rect(bx, by - box_h, box_w-10, box_h, stroke=1, fill=0)
-
-        c.setFont("Helvetica-Bold", 11)
-        c.setFillColor(colors.black)
-        c.drawString(bx+10, by-18, label)
-
-        c.setFont("Helvetica", 9)
-        c.setFillColor(colors.HexColor("#555555"))
-        c.drawString(bx+10, by-34, f"A: {a_val}")
-        c.drawString(bx+10, by-48, f"B: {b_val}")
-
-        c.setFont("Helvetica-Bold", 14)
-        c.setFillColor(_delta_color(d_val))
-        c.drawString(bx+10, by-74, f"{_money(d_val) if label=='Sales' else _int(d_val)}")
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(bx+10, by-90, f"{_pct(p_val)}")
-        c.setFillColor(colors.black)
-
-    _tot_box(0, "Sales",
-             _money(totals.get("SalesA", 0)),
-             _money(totals.get("SalesB", 0)),
-             totals.get("SalesDiff", 0),
-             totals.get("SalesPct", None))
-
-    _tot_box(1, "Units",
-             _int(totals.get("UnitsA", 0)),
-             _int(totals.get("UnitsB", 0)),
-             totals.get("UnitsDiff", 0),
-             totals.get("UnitsPct", None))
-
-    y -= box_h + 0.25*inch
-
-    # Key insights (short)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(x0, y, "Key insights")
-    y -= 0.20*inch
-    c.setFont("Helvetica", 9)
-    sales_line = f"Total sales: {_money(totals.get('SalesA',0))} → {_money(totals.get('SalesB',0))} ({_money(totals.get('SalesDiff',0))})."
-    units_line = f"Total units: {_int(totals.get('UnitsA',0))} → {_int(totals.get('UnitsB',0))} ({_int(totals.get('UnitsDiff',0))})."
-    for line in [sales_line, units_line]:
-        c.drawString(x0+10, y, f"• {line}"[:125])
-        y -= 0.16*inch
-
-    y -= 0.10*inch
-
-    # Top 5 drivers table (SKU)
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(x0, y, "Top drivers (by Sales change)")
-    y -= 0.18*inch
-
-    c.setFont("Helvetica-Bold", 8)
-    col_x = [x0, x0+2.3*inch, x0+3.7*inch, x0+5.1*inch]
-    headers = ["SKU", "Sales Δ", "Units Δ", "Momentum"]
-    for hx, htxt in zip(col_x, headers):
-        c.drawString(hx, y, htxt)
-    y -= 0.14*inch
-
-    c.setFont("Helvetica", 8)
-    ddf = drivers.head(5).copy() if drivers is not None else pd.DataFrame()
-    if ddf is None or ddf.empty:
-        c.drawString(x0, y, "—")
-        y -= 0.14*inch
-    else:
-        for _, r in ddf.iterrows():
-            if y < 1.0*inch:
-                break
-            sku = str(r.get("SKU",""))[:22]
-            sd = float(r.get("Sales_Diff",0) or 0)
-            ud = float(r.get("Units_Diff",0) or 0)
-            mom = r.get("Momentum","")
-            c.setFillColor(colors.black)
-            c.drawString(col_x[0], y, sku)
-            c.setFillColor(_delta_color(sd))
-            c.drawRightString(col_x[1]+1.25*inch, y, _money(sd))
-            c.setFillColor(_delta_color(ud))
-            c.drawRightString(col_x[2]+1.00*inch, y, _int(ud))
-            c.setFillColor(colors.HexColor("#333333"))
-            c.drawString(col_x[3], y, str(mom)[:28])
-            y -= 0.14*inch
-        c.setFillColor(colors.black)
-
-    c.showPage()
-
-    # ---------------------------
-    # Page 2: retailer table + sku movers + momentum
-    # ---------------------------
-    y = h - 0.75 * inch
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(x0, y, "Retailers (A vs B)")
-    y -= 0.22*inch
-
-    # Retailer table (all rows)
-    rt = retailer_tbl.copy() if retailer_tbl is not None else pd.DataFrame()
-    if rt is None or rt.empty:
-        c.setFont("Helvetica", 9)
-        c.drawString(x0, y, "—")
-        y -= 0.2*inch
-    else:
-        # columns: Retailer, Sales_A, Sales_B, Sales_Diff, Units_A, Units_B, Units_Diff
-        c.setFont("Helvetica-Bold", 8)
-        colw = [2.0*inch, 1.0*inch, 1.0*inch, 1.0*inch, 0.8*inch, 0.8*inch, 0.8*inch]
-        cols = ["Retailer","Sales_A","Sales_B","Sales_Diff","Units_A","Units_B","Units_Diff"]
-        cx = [x0]
-        for w_ in colw[:-1]:
-            cx.append(cx[-1]+w_)
-        for j, cn in enumerate(cols):
-            c.drawString(cx[j], y, cn.replace("_"," "))
-        y -= 0.14*inch
-        c.setFont("Helvetica", 8)
-        # format cells
-        for _, r in rt.iterrows():
-            if y < 4.6*inch:
-                break
-            c.setFillColor(colors.black)
-            c.drawString(cx[0], y, str(r.get("Retailer",""))[:26])
-            # sales
-            sd = float(r.get("Sales_Diff",0) or 0)
-            c.drawRightString(cx[1]+0.95*inch, y, _money(r.get("Sales_A",0)))
-            c.drawRightString(cx[2]+0.95*inch, y, _money(r.get("Sales_B",0)))
-            c.setFillColor(_delta_color(sd))
-            c.drawRightString(cx[3]+0.95*inch, y, _money(sd))
-            # units
-            ud = float(r.get("Units_Diff",0) or 0)
-            c.setFillColor(colors.black)
-            c.drawRightString(cx[4]+0.75*inch, y, _int(r.get("Units_A",0)))
-            c.drawRightString(cx[5]+0.75*inch, y, _int(r.get("Units_B",0)))
-            c.setFillColor(_delta_color(ud))
-            c.drawRightString(cx[6]+0.75*inch, y, _int(ud))
-            y -= 0.13*inch
-        c.setFillColor(colors.black)
-
-    # SKU movers (increase/decrease)
-    y -= 0.20*inch
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(x0, y, "Top SKU movers (Sales Δ)")
-    y -= 0.18*inch
-
-    def _sku_table(title_txt, df_):
-        nonlocal y
-        c.setFont("Helvetica-Bold", 9)
-        c.drawString(x0, y, title_txt)
-        y -= 0.14*inch
-        c.setFont("Helvetica-Bold", 8)
-        c.drawString(x0, y, "SKU")
-        c.drawString(x0+1.4*inch, y, "Sales Δ")
-        c.drawString(x0+2.7*inch, y, "Units Δ")
-        y -= 0.12*inch
-        c.setFont("Helvetica", 8)
-        for _, r in (df_.head(10) if df_ is not None else pd.DataFrame()).iterrows():
-            if y < 1.0*inch:
-                break
-            sku = str(r.get("SKU",""))[:18]
-            sd = float(r.get("Sales_Diff",0) or 0)
-            ud = float(r.get("Units_Diff",0) or 0)
-            c.setFillColor(colors.black)
-            c.drawString(x0, y, sku)
-            c.setFillColor(_delta_color(sd))
-            c.drawRightString(x0+2.35*inch, y, _money(sd))
-            c.setFillColor(_delta_color(ud))
-            c.drawRightString(x0+3.15*inch, y, _int(ud))
-            y -= 0.12*inch
-        c.setFillColor(colors.black)
-        y -= 0.10*inch
-
-    # Place two columns for up/down if space permits
-    # We'll do sequential tables; keeps layout predictable.
-    _sku_table("Largest increases", sku_up)
-    _sku_table("Largest decreases", sku_down)
-
-    # Momentum table
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(x0, y, "SKU momentum (in period B)")
-    y -= 0.18*inch
-    c.setFont("Helvetica-Bold", 8)
-    c.drawString(x0, y, "SKU")
-    c.drawString(x0+1.4*inch, y, "Consecutive ↑ weeks")
-    c.drawString(x0+3.1*inch, y, "Last4 - Prev4 (Sales)")
-    y -= 0.12*inch
-    c.setFont("Helvetica", 8)
-    if momentum is None or momentum.empty:
-        c.drawString(x0, y, "—")
-        y -= 0.12*inch
-    else:
-        for _, r in momentum.head(10).iterrows():
-            if y < 0.9*inch:
-                break
-            sku = str(r.get("SKU",""))[:18]
-            streak = r.get("Streak", "")
-            d4 = float(r.get("Last4Diff",0) or 0)
-            c.setFillColor(colors.black)
-            c.drawString(x0, y, sku)
-            c.drawRightString(x0+2.95*inch, y, str(streak))
-            c.setFillColor(_delta_color(d4))
-            c.drawRightString(x0+5.7*inch, y, _money(d4))
-            y -= 0.12*inch
-        c.setFillColor(colors.black)
-
-    c.showPage()
-    c.save()
-    return buf.getvalue()
-
-
-MONTH_NAME_TO_NUM = {
-    "January": 1, "February": 2, "March": 3, "April": 4,
-    "May": 5, "June": 6, "July": 7, "August": 8,
-    "September": 9, "October": 10, "November": 11, "December": 12
-}
-
-AVG_WINDOW_OPTIONS = ["4 weeks","5 weeks","6 weeks","7 weeks","8 weeks","9 weeks","10 weeks","11 weeks","12 weeks",
-                      "January","February","March","April","May","June","July","August","September","October","November","December"]
-
-
-def _build_month_year_labels(dates: pd.Series) -> list[str]:
-    """Return sorted unique month-year labels like 'January 2026' present in dates."""
-    try:
-        ts = pd.to_datetime(dates, errors="coerce").dropna()
-        if ts.empty:
-            return []
-        per = ts.dt.to_period("M")
-        months = sorted(per.unique().tolist())
-        return [m.to_timestamp().strftime("%B %Y") for m in months]
-    except Exception:
-        return []
-
-def resolve_avg_use(avg_window, use_cols, current_year):
-    """Return which week columns (week start dates) to use for averaging.
-
-    Supported avg_window values:
-      - rolling windows like '8 weeks'
-      - month name like 'January' (uses current_year)
-      - month-year label like 'January 2026'
-    """
-    if not use_cols:
-        return []
-
-    # Normalize to datetime series for safe .dt ops
-    dates = pd.to_datetime(pd.Series(list(use_cols)), errors="coerce")
-
-    # Month-Year label (e.g., 'January 2026')
-    if isinstance(avg_window, str):
-        m = re.match(r"^([A-Za-z]+)\s+(\d{4})$", avg_window.strip())
-        if m:
-            mon_name, yr = m.group(1), m.group(2)
-            if mon_name in MONTH_NAME_TO_NUM:
-                mnum = MONTH_NAME_TO_NUM[mon_name]
-                mask = (dates.dt.year == int(yr)) & (dates.dt.month == int(mnum))
-                return [c for c, ok in zip(use_cols, mask.fillna(False).tolist()) if ok]
-
-    # Month-only (within current_year)
-    if isinstance(avg_window, str) and avg_window in MONTH_NAME_TO_NUM:
-        mnum = MONTH_NAME_TO_NUM[avg_window]
-        mask = (dates.dt.year == int(current_year)) & (dates.dt.month == int(mnum))
-        return [c for c, ok in zip(use_cols, mask.fillna(False).tolist()) if ok]
-
-    # Rolling weeks like '8 weeks'
-    if isinstance(avg_window, str) and "week" in avg_window:
-        try:
-            n = int(avg_window.split()[0])
-        except Exception:
-            n = 4
-        return use_cols[-n:] if len(use_cols) >= n else use_cols
-
-    return list(use_cols)
-
-
-
-APP_TITLE = "Sales Dashboard (Vendor Map + Weekly Sheets)"
-DATA_DIR = Path("data")
-DATA_DIR.mkdir(exist_ok=True)
-
-DEFAULT_VENDOR_MAP = DATA_DIR / "vendor_map.xlsx"
-DEFAULT_SALES_STORE = DATA_DIR / "sales_store.csv"
-DEFAULT_PRICE_HISTORY = DATA_DIR / "price_history.csv"
-
-
-# Year locks (prevent accidental edits to closed years)
-DEFAULT_YEAR_LOCKS = DATA_DIR / "year_locks.json"
-
-def load_year_locks() -> set[int]:
-    try:
-        if DEFAULT_YEAR_LOCKS.exists():
-            obj = json.loads(DEFAULT_YEAR_LOCKS.read_text(encoding="utf-8"))
-            years = obj.get("locked_years", [])
-            return set(int(y) for y in years)
-    except Exception:
-        pass
-    return set()
-
-def save_year_locks(locked_years: set[int]) -> None:
-    try:
-        DEFAULT_YEAR_LOCKS.write_text(json.dumps({"locked_years": sorted(list(locked_years))}, indent=2), encoding="utf-8")
-    except Exception:
-        return
-
-def overwrite_sales_rows(target_year: int, retailers: set[str]) -> None:
-    """Remove rows from sales_store.csv for the given year + retailers."""
-    if not DEFAULT_SALES_STORE.exists():
-        return
-    try:
-        cur = pd.read_csv(DEFAULT_SALES_STORE)
-        cur["StartDate"] = pd.to_datetime(cur.get("StartDate"), errors="coerce")
-        cur["Retailer"] = cur.get("Retailer", "").map(_normalize_retailer)
-        retailers_n = {_normalize_retailer(r) for r in retailers}
-        keep = ~((cur["StartDate"].dt.year == int(target_year)) & (cur["Retailer"].isin(retailers_n)))
-        cur2 = cur[keep].copy()
-        cur2.to_csv(DEFAULT_SALES_STORE, index=False)
-    except Exception:
-        return
-
-# -------------------------
-# Normalization
-# -------------------------
-def _normalize_retailer(x: str) -> str:
-    if x is None:
-        return ""
-    x = str(x).strip()
-    aliases = {
-        "home depot": "Depot",
-        "depot": "Depot",
-        "the home depot": "Depot",
-        "lowes": "Lowe's",
-        "lowe's": "Lowe's",
-        "tractor supply": "Tractor Supply",
-        "tsc": "Tractor Supply",
-        "amazon": "Amazon",
-    }
-    key = re.sub(r"\s+", " ", x.lower()).strip()
-    return aliases.get(key, x)
-
-def _normalize_sku(x: str) -> str:
-    if pd.isna(x):
-        return ""
-    return str(x).strip()
-
-# -------------------------
-# Formatting
-# -------------------------
-def fmt_currency(x) -> str:
-    if x is None or (isinstance(x, float) and np.isnan(x)):
-        return ""
-    try:
-        v = float(x)
-    except Exception:
-        return ""
-    s = f"${abs(v):,.2f}"
-    return f"({s})" if v < 0 else s
-
-def fmt_int(x) -> str:
-    if x is None or (isinstance(x, float) and np.isnan(x)):
-        return ""
-    try:
-        v = float(x)
-    except Exception:
-        return ""
-    return f"{int(round(v)):,.0f}"
-
-
-
-
-
-def fmt_currency_signed(x) -> str:
-    try:
-        x = float(x)
-    except Exception:
-        return str(x)
-    return f"-${abs(x):,.0f}" if x < 0 else f"${x:,.0f}"
-
-
-
-def _diff_color(v):
-    """Return CSS color style for signed deltas (green positive, red negative)."""
-    try:
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            return ""
-        x = float(v)
-    except Exception:
-        return ""
-    if x > 0:
-        return "color: #0a7d00; font-weight: 600;"
-    if x < 0:
-        return "color: #b00020; font-weight: 600;"
-    return ""
-
-
-
-def create_app_backup_zip() -> bytes:
-    """Create an in-memory ZIP backup of app data directories/files."""
-    import io, zipfile, os
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        paths = []
-        for name in ["DATA_DIR", "SAVED_VIEWS_DIR", "BACKUP_DIR", "UPLOAD_DIR", "REPORTS_DIR"]:
-            p = globals().get(name)
-            if isinstance(p, str) and p:
-                paths.append(p)
-        for name in ["VENDOR_MAP_PATH", "VENDOR_MAP_FILE", "VENDOR_MAP_DEFAULT_PATH"]:
-            p = globals().get(name)
-            if isinstance(p, str) and p:
-                paths.append(p)
-
-        def add_path(path: str):
-            if not path or not os.path.exists(path):
-                return
-            if os.path.isfile(path):
-                arc = os.path.relpath(path, start=os.getcwd())
-                z.write(path, arcname=arc)
-            else:
-                for root, _, files in os.walk(path):
-                    for fn in files:
-                        full = os.path.join(root, fn)
-                        arc = os.path.relpath(full, start=os.getcwd())
-                        z.write(full, arcname=arc)
-
-        seen=set()
-        for p in paths:
-            if p in seen:
-                continue
-            seen.add(p)
-            add_path(p)
-
-    buf.seek(0)
-    return buf.getvalue()
-
-
-def restore_app_backup_zip(zip_bytes: bytes) -> tuple[bool, str]:
-    """Restore a ZIP created by create_app_backup_zip into the current working directory."""
-    import io, zipfile, os
-    try:
-        with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as z:
-            for member in z.namelist():
-                if member.startswith("/") or ".." in member.split("/"):
-                    return (False, f"Unsafe path in zip: {member}")
-            z.extractall(path=os.getcwd())
-        return (True, "Restore complete. Please rerun the app.")
-    except Exception as e:
-        return (False, f"Restore failed: {e}")
-
-def fmt_int_signed(x) -> str:
-    try:
-        x = float(x)
-    except Exception:
-        return str(x)
-    x = int(round(x))
-    return f"-{abs(x):,}" if x < 0 else f"{x:,}"
-
-# PDF-friendly formatting helpers (safe to use anywhere)
-def _fmt_pdf_money(v) -> str:
-    try:
-        if v is None or (isinstance(v, float) and np.isnan(v)):
-            return ""
-        if isinstance(v, str) and v.strip().startswith("$"):
-            return v.strip()
-        return f"${float(v):,.2f}"
-    except Exception:
-        return ""
-
-def _fmt_pdf_int(v) -> str:
-    try:
-        if v is None or (isinstance(v, float) and np.isnan(v)):
-            return ""
-        return f"{int(round(float(v))):,}"
-    except Exception:
-        return ""
-
-
-
-def make_unique_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Ensure dataframe has unique column names (pyarrow requirement)."""
-    cols = list(df.columns)
-    seen = {}
-    new_cols = []
-    for c in cols:
-        if c not in seen:
-            seen[c] = 0
-            new_cols.append(c)
-        else:
-            seen[c] += 1
-            new_cols.append(f"{c}.{seen[c]}")
-    df2 = df.copy()
-    df2.columns = new_cols
-    return df2
-
-def fmt_2(x) -> str:
-    if x is None or (isinstance(x, float) and np.isnan(x)):
-        return ""
-    try:
-        v = float(x)
-    except Exception:
-        return ""
-    return f"{v:,.2f}"
-
-def _color(v) -> str:
-    if v is None or (isinstance(v, float) and np.isnan(v)):
-        return "inherit"
-    try:
-        v = float(v)
-    except Exception:
-        return "inherit"
-    if v > 0:
-        return "green"
-    if v < 0:
-        return "red"
-    return "inherit"
-
-def _table_height(df: pd.DataFrame, row_px: int = 32, header_px: int = 38, max_px: int = 1100) -> int:
-    if df is None:
-        return 220
-    n = int(df.shape[0])
-    h = header_px + (n + 1) * row_px
-    return int(min(max(h, 220), max_px))
-
-def style_currency_cols(df: pd.DataFrame, diff_cols=None):
-    diff_cols = diff_cols or []
-    sty = df.style
-    # format all non-first columns as currency
-    first = df.columns[0]
-    fmt = {c: (lambda v: fmt_currency(v)) for c in df.columns if c != first}
-    sty = sty.format(fmt)
-    for c in diff_cols:
-        if c in df.columns:
-            sty = sty.applymap(lambda v: f"color: {_color(v)};", subset=[c])
-    return sty
-
-# -------------------------
-# Vendor map
-# -------------------------
-def load_vendor_map(path: Path) -> pd.DataFrame:
-    df = pd.read_excel(path)
-    cols = {c.lower().strip(): c for c in df.columns}
-
-    def pick(name, fallbacks):
-        for k in [name] + fallbacks:
-            if k in cols:
-                return cols[k]
-        return None
-
-    c_retail = pick("retailer", [])
-    c_sku = pick("sku", ["item", "item sku"])
-    c_vendor = pick("vendor", ["supplier"])
-    c_price = pick("price", ["unit price", "cost"])
-
-    out = pd.DataFrame({
-        "Retailer": df[c_retail] if c_retail else "",
-        "SKU": df[c_sku] if c_sku else "",
-        "Vendor": df[c_vendor] if c_vendor else "",
-        "Price": df[c_price] if c_price else np.nan,
-    })
-
-    out["Retailer"] = out["Retailer"].map(_normalize_retailer)
-    out["SKU"] = out["SKU"].map(_normalize_sku)
-    out["Vendor"] = out["Vendor"].astype(str).str.strip()
-    out["Price"] = pd.to_numeric(out["Price"], errors="coerce")
-
-    # preserve order per retailer
-    out["MapOrder"] = 0
-    for r, grp in out.groupby("Retailer", sort=False):
-        for j, ix in enumerate(grp.index.tolist()):
-            out.loc[ix, "MapOrder"] = j
-
-    return out
-
-# -------------------------
-# Sales store
-# -------------------------
-def load_sales_store() -> pd.DataFrame:
-    if DEFAULT_SALES_STORE.exists():
-        df = pd.read_csv(DEFAULT_SALES_STORE)
-        for c in ["StartDate", "EndDate"]:
-            if c in df.columns:
-                df[c] = pd.to_datetime(df[c], errors="coerce")
-        df["Retailer"] = df["Retailer"].map(_normalize_retailer)
-        df["SKU"] = df["SKU"].map(_normalize_sku)
-        df["Units"] = pd.to_numeric(df["Units"], errors="coerce").fillna(0.0)
-        if "UnitPrice" in df.columns:
-            df["UnitPrice"] = pd.to_numeric(df["UnitPrice"], errors="coerce")
-        else:
-            df["UnitPrice"] = np.nan
-        return df
-    return pd.DataFrame(columns=["Retailer","SKU","Units","UnitPrice","StartDate","EndDate","SourceFile"])
-
-
-
-# -------------------------
-# Price history (effective dating)
-# -------------------------
-def _normalize_price_retailer(x):
-    x = "" if x is None else str(x).strip()
-    if x == "" or x.lower() in {"all","*", "any"}:
-        return "*"
-    return _normalize_retailer(x)
-
-def load_price_history() -> pd.DataFrame:
-    """
-    Returns columns: Retailer, SKU, Price, StartDate (datetime64)
-    Retailer="*" means applies to all retailers for that SKU.
-    """
-    if DEFAULT_PRICE_HISTORY.exists():
-        ph = pd.read_csv(DEFAULT_PRICE_HISTORY)
-        # flexible column names
-        colmap = {c.lower(): c for c in ph.columns}
-        sku_col = colmap.get("sku") or colmap.get("sku#") or colmap.get("skunumber") or colmap.get("skuid")
-        price_col = colmap.get("price") or colmap.get("unitprice") or colmap.get("unit_price")
-        date_col = colmap.get("startdate") or colmap.get("start_date") or colmap.get("effective_date") or colmap.get("date")
-        ret_col = colmap.get("retailer")
-
-        if sku_col:
-            ph["SKU"] = ph[sku_col].map(_normalize_sku)
-        else:
-            ph["SKU"] = ""
-        if price_col:
-            ph["Price"] = pd.to_numeric(ph[price_col], errors="coerce")
-        else:
-            ph["Price"] = np.nan
-        if date_col:
-            ph["StartDate"] = pd.to_datetime(ph[date_col], errors="coerce")
-        else:
-            ph["StartDate"] = pd.NaT
-        if ret_col:
-            ph["Retailer"] = ph[ret_col].map(_normalize_price_retailer)
-        else:
-            ph["Retailer"] = "*"
-
-        ph = ph[["Retailer","SKU","Price","StartDate"]].dropna(subset=["SKU","Price","StartDate"])
-        ph = ph.sort_values(["Retailer","SKU","StartDate"]).reset_index(drop=True)
-        return ph
-    return pd.DataFrame(columns=["Retailer","SKU","Price","StartDate"])
-
-def save_price_history(ph: pd.DataFrame) -> None:
-    ph2 = ph.copy()
-    ph2["StartDate"] = pd.to_datetime(ph2["StartDate"], errors="coerce")
-    ph2 = ph2.dropna(subset=["Retailer","SKU","Price","StartDate"])
-    ph2["Retailer"] = ph2["Retailer"].map(_normalize_price_retailer)
-    ph2["SKU"] = ph2["SKU"].map(_normalize_sku)
-    ph2["Price"] = pd.to_numeric(ph2["Price"], errors="coerce")
-    ph2 = ph2.sort_values(["Retailer","SKU","StartDate"]).reset_index(drop=True)
-    ph2.to_csv(DEFAULT_PRICE_HISTORY, index=False)
-
-
-
-
-
-# -------------------------
-# Caching helpers (performance)
-# -------------------------
-def _file_mtime(p: Path) -> float:
-    try:
-        return float(p.stat().st_mtime)
-    except Exception:
-        return 0.0
-
-@st.cache_data(show_spinner=False)
-def cached_vendor_map(path_str: str, mtime: float) -> pd.DataFrame:
-    # mtime is included to invalidate cache when the file changes
-    return load_vendor_map(Path(path_str))
-
-@st.cache_data(show_spinner=False)
-def cached_sales_store(mtime: float) -> pd.DataFrame:
-    return load_sales_store()
-
-@st.cache_data(show_spinner=False)
-def cached_price_history(mtime: float) -> pd.DataFrame:
-    return load_price_history()
-def _prepare_price_history_upload(new_rows: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Normalize a price history upload. Returns:
-      - normalized rows to consider (SKU, Retailer, StartDate, Price)
-      - rows ignored (for reporting)
-
-    Rules:
-      - Price blank/NaN => ignored
-      - Price <= 0 => ignored (treated as blank)
-      - Missing SKU or StartDate => ignored
-
-    Column name matching is forgiving (spaces/underscores/case).
-    Accepts: SKU, Retailer, Price, StartDate (or "Start Date", "Effective Date", etc.)
-    """
-    n = new_rows.copy()
-
-    def norm_key(s: str) -> str:
-        s = str(s).strip().lower()
-        # keep only alphanumerics to make "Start Date" == "start_date" == "StartDate"
-        return re.sub(r"[^a-z0-9]+", "", s)
-
-    cols = {norm_key(c): c for c in n.columns}
-
-    def pick(*keys):
-        for k in keys:
-            if k in cols:
-                return cols[k]
-        return None
-
-    sku_col = pick("sku", "sku#", "skunumber", "skuid", "itemsku")
-    price_col = pick("price", "unitprice", "unit_price")
-    date_col = pick("startdate", "start_date", "startdateeffective", "effectivedate", "effective_date", "start", "date", "startdate1", "startdate2", "startdate3", "startdate4", "startdate5", "startdate6", "startdate7", "startdate8", "startdate9", "startdate10", "startdate11", "startdate12", "startdate13", "startdate14", "startdate15", "startdate16", "startdate17", "startdate18", "startdate19", "startdate20", "startdate21", "startdate22", "startdate23", "startdate24", "startdate25", "startdate26", "startdate27", "startdate28", "startdate29", "startdate30", "startdate31", "startdate32", "startdate33", "startdate34", "startdate35", "startdate36", "startdate37", "startdate38", "startdate39", "startdate40", "startdate41", "startdate42", "startdate43", "startdate44", "startdate45", "startdate46", "startdate47", "startdate48", "startdate49", "startdate50", "startdate51", "startdate52", "startdate53", "startdate54", "startdate55", "startdate56", "startdate57", "startdate58", "startdate59", "startdate60")
-    # Common: "start date"
-    if date_col is None:
-        date_col = pick("startdate", "startdate", "startdate")  # no-op, just for clarity
-        date_col = cols.get("startdate") or cols.get("startdate")  # no-op
-
-    # Explicitly support "Start Date" / "Effective Date"
-    if date_col is None:
-        date_col = pick("startdate", "startdate")  # still none
-    if date_col is None:
-        date_col = pick("startdate")  # still none
-
-    # Final fallback: try any column that normalizes to "startdate"
-    if date_col is None and "startdate" in cols:
-        date_col = cols["startdate"]
-
-    ret_col = pick("retailer", "store", "channel")
-
-    if not sku_col or not price_col or not date_col:
-        raise ValueError("Price history upload must include columns for SKU, Price, and StartDate (e.g., 'Start Date').")
-
-    norm = pd.DataFrame({
-        "SKU": n[sku_col].map(_normalize_sku),
-        "Price": pd.to_numeric(n[price_col], errors="coerce"),
-        "StartDate": pd.to_datetime(n[date_col], errors="coerce"),
-        "Retailer": n[ret_col].map(_normalize_price_retailer) if ret_col else "*",
-    })
-
-    ignored = norm.copy()
-    ignored["IgnoreReason"] = ""
-
-    mask = ignored["SKU"].isna() | (ignored["SKU"].astype(str).str.strip() == "")
-    ignored.loc[mask, "IgnoreReason"] = "Missing SKU"
-
-    mask = ignored["StartDate"].isna()
-    ignored.loc[mask, "IgnoreReason"] = np.where(
-        ignored.loc[mask, "IgnoreReason"].eq(""),
-        "Missing StartDate",
-        ignored.loc[mask, "IgnoreReason"]
-    )
-
-    mask = ignored["Price"].isna()
-    ignored.loc[mask, "IgnoreReason"] = np.where(
-        ignored.loc[mask, "IgnoreReason"].eq(""),
-        "Blank Price",
-        ignored.loc[mask, "IgnoreReason"]
-    )
-
-    mask = (ignored["Price"].notna()) & (ignored["Price"] <= 0)
-    ignored.loc[mask, "IgnoreReason"] = np.where(
-        ignored.loc[mask, "IgnoreReason"].eq(""),
-        "Price <= 0",
-        ignored.loc[mask, "IgnoreReason"]
-    )
-
-    keep = norm.dropna(subset=["SKU","StartDate","Price"]).copy()
-    keep = keep[keep["Price"] > 0].copy()
-
-    ignored = ignored[ignored["IgnoreReason"] != ""].copy()
-    keep = keep.reset_index(drop=True)
-    ignored = ignored.reset_index(drop=True)
-    return keep, ignored
-
-
-def _price_history_diff(cur: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame:
-    """
-    Build a diff table for (Retailer, SKU, StartDate).
-    Actions: insert/update/noop
-    """
-    if cur is None or cur.empty:
-        base = incoming.copy()
-        base["OldPrice"] = np.nan
-        base["Action"] = "insert"
-        base["PriceDiff"] = np.nan
-        return base[["Retailer","SKU","StartDate","OldPrice","Price","PriceDiff","Action"]].sort_values(["Retailer","SKU","StartDate"])
-
-    cur2 = cur.copy()
-    cur2["StartDate"] = pd.to_datetime(cur2["StartDate"], errors="coerce")
-    inc = incoming.copy()
-    inc["StartDate"] = pd.to_datetime(inc["StartDate"], errors="coerce")
-
-    key = ["Retailer","SKU","StartDate"]
-    merged = inc.merge(cur2[key + ["Price"]].rename(columns={"Price":"OldPrice"}), on=key, how="left")
-    merged["PriceDiff"] = merged["Price"] - merged["OldPrice"]
-    merged["Action"] = np.where(merged["OldPrice"].isna(), "insert",
-                        np.where(np.isclose(merged["Price"], merged["OldPrice"], equal_nan=True), "noop", "update"))
-    return merged[key + ["OldPrice","Price","PriceDiff","Action"]].sort_values(key)
-
-def upsert_price_history(new_rows: pd.DataFrame) -> tuple[int, int, int]:
-    """
-    Upsert price history with effective dates.
-    Returns (inserted, updated, ignored_noop) counts for reporting.
-    """
-    cur = load_price_history()
-    incoming, _ignored = _prepare_price_history_upload(new_rows)
-
-    if incoming.empty:
-        return (0, 0, 0)
-
-    diff = _price_history_diff(cur, incoming)
-    to_apply = diff[diff["Action"].isin(["insert","update"])].copy()
-    noop = int((diff["Action"] == "noop").sum())
-
-    if to_apply.empty:
-        return (0, 0, noop)
-
-    apply_rows = to_apply[["Retailer","SKU","StartDate","Price"]].copy()
-
-    merged = pd.concat([cur, apply_rows], ignore_index=True) if (cur is not None and not cur.empty) else apply_rows.copy()
-    merged["StartDate"] = pd.to_datetime(merged["StartDate"], errors="coerce")
-    merged = merged.dropna(subset=["SKU","Price","StartDate"])
-    merged = merged.drop_duplicates(subset=["Retailer","SKU","StartDate"], keep="last")
-    merged = merged.sort_values(["Retailer","SKU","StartDate"]).reset_index(drop=True)
-    save_price_history(merged)
-
-    inserted = int((diff["Action"] == "insert").sum())
-    updated = int((diff["Action"] == "update").sum())
-    return (inserted, updated, noop)
-
-
-
-def apply_effective_prices(base: pd.DataFrame, vmap: pd.DataFrame, ph: pd.DataFrame) -> pd.DataFrame:
-    """
-    Hybrid pricing:
-      1) If UnitPrice is provided on the weekly sheet, ALWAYS use it (locks history).
-      2) Else, use effective-date price history (retailer-specific first, then wildcard '*' retailer for all).
-      3) Else, fall back to vendor map Price.
-
-    Notes:
-      - merge_asof requires non-null, sorted datetime keys.
-    """
-    base = base.copy()
-
-    # Ensure expected columns exist
-    if "Price" not in base.columns:
-        base["Price"] = np.nan
-    if "UnitPrice" not in base.columns:
-        base["UnitPrice"] = np.nan
-
-    base["StartDate"] = pd.to_datetime(base["StartDate"], errors="coerce")
-
-    # Start with vendor-map price, then let weekly UnitPrice override
-    base["PriceEffective"] = base["Price"]
-    base["PriceEffective"] = base["UnitPrice"].combine_first(base["PriceEffective"])
-
-    # If no price history, finish
-    if ph is None or ph.empty:
-        return base
-
-    ph = ph.copy()
-    ph["StartDate"] = pd.to_datetime(ph["StartDate"], errors="coerce")
-    ph = ph.dropna(subset=["SKU", "StartDate", "Price"]).copy()
-    if ph.empty:
-        return base
-
-    # Normalize keys
-    if "Retailer" not in ph.columns:
-        ph["Retailer"] = "*"
-    ph["Retailer"] = ph["Retailer"].fillna("*").astype(str).str.strip()
-    ph["SKU"] = ph["SKU"].map(_normalize_sku)
-    base["SKU"] = base["SKU"].map(_normalize_sku)
-
-    # merge_asof cannot handle NaT in the 'on' key
-    base_valid = base[base["StartDate"].notna()].copy()
-    base_invalid = base[base["StartDate"].isna()].copy()
-
-    # Retailer-specific history (not '*')
-    ph_exact = ph[ph["Retailer"] != "*"].copy()
-    ph_star = ph[ph["Retailer"] == "*"].copy()
-
-    # Apply retailer-specific prices
-    if not ph_exact.empty and not base_valid.empty:
-        b1 = base_valid.sort_values(["StartDate","Retailer","SKU"], kind="mergesort").reset_index(drop=True)
-        p1 = ph_exact.sort_values(["StartDate","Retailer","SKU"], kind="mergesort").reset_index(drop=True)
-
-        exact = pd.merge_asof(
-            b1,
-            p1[["Retailer", "SKU", "StartDate", "Price"]].rename(columns={"Price": "PH_Price"}),
-            by=["Retailer", "SKU"],
-            on="StartDate",
-            direction="backward",
-            allow_exact_matches=True,
-        )
-
-        # Only use PH_Price when UnitPrice is missing
-        exact["PriceEffective"] = exact["UnitPrice"].combine_first(exact["PH_Price"]).combine_first(exact["PriceEffective"])
-        exact = exact.drop(columns=["PH_Price"], errors="ignore")
-        base_valid = exact
-
-    # Apply wildcard prices to rows still missing PriceEffective (and no UnitPrice)
-    if not ph_star.empty and not base_valid.empty:
-        missing = base_valid["UnitPrice"].isna() & base_valid["PriceEffective"].isna()
-        if missing.any():
-            b2 = base_valid.loc[missing].copy()
-            b2 = b2.sort_values(["StartDate","SKU"], kind="mergesort").reset_index(drop=True)
-            p2 = ph_star.sort_values(["StartDate","SKU"], kind="mergesort").reset_index(drop=True)
-
-            star = pd.merge_asof(
-                b2,
-                p2[["SKU", "StartDate", "Price"]].rename(columns={"Price": "PH_PriceStar"}),
-                by=["SKU"],
-                on="StartDate",
-                direction="backward",
-                allow_exact_matches=True,
-            )
-            base_valid.loc[missing, "PriceEffective"] = star["PH_PriceStar"].values
-
-    # Final: ensure UnitPrice still wins
-    if not base_valid.empty:
-        base_valid["PriceEffective"] = base_valid["UnitPrice"].combine_first(base_valid["PriceEffective"])
-
-    # Recombine
-    base_out = pd.concat([base_valid, base_invalid], ignore_index=True)
-    return base_out
-
-    ph = ph.copy()
-    ph["StartDate"] = pd.to_datetime(ph["StartDate"], errors="coerce")
-    ph = ph.dropna(subset=["SKU", "StartDate", "Price"]).copy()
-
-    if ph.empty:
-        return base
-
-    # Normalize retailer field
-    if "Retailer" not in ph.columns:
-        ph["Retailer"] = "*"
-    ph["Retailer"] = ph["Retailer"].fillna("*").astype(str).str.strip()
-    ph["SKU"] = ph["SKU"].map(_normalize_sku)
-    base["SKU"] = base["SKU"].map(_normalize_sku)
-
-    # Retailer-specific history (not '*')
-    ph_exact = ph[ph["Retailer"] != "*"].copy()
-    # Wildcard history applies to all retailers
-    ph_star = ph[ph["Retailer"] == "*"].copy()
-
-    # Apply retailer-specific prices using merge_asof
-    if not ph_exact.empty:
-        b1 = base.sort_values(["Retailer", "SKU", "StartDate"]).reset_index(drop=True)
-        p1 = ph_exact.sort_values(["Retailer", "SKU", "StartDate"]).reset_index(drop=True)
-
-        # merge_asof requires both sides sorted by by-keys then on-key
-        exact = pd.merge_asof(
-            b1,
-            p1[["Retailer", "SKU", "StartDate", "Price"]].rename(columns={"Price": "PH_Price"}),
-            by=["Retailer", "SKU"],
-            on="StartDate",
-            direction="backward",
-            allow_exact_matches=True,
-        )
-        base = exact
-
-        # Only use PH_Price when UnitPrice is missing
-        base["PriceEffective"] = base["UnitPrice"].combine_first(base["PH_Price"]).combine_first(base["PriceEffective"])
-        base = base.drop(columns=["PH_Price"], errors="ignore")
-
-    # Apply wildcard prices for any rows still missing an effective price (and no UnitPrice)
-    if not ph_star.empty:
-        missing = base["UnitPrice"].isna() & base["PriceEffective"].isna()
-        if missing.any():
-            b2 = base.loc[missing].copy()
-            b2 = b2.sort_values(["SKU", "StartDate"]).reset_index(drop=True)
-            p2 = ph_star.sort_values(["SKU", "StartDate"]).reset_index(drop=True)
-
-            star = pd.merge_asof(
-                b2,
-                p2[["SKU", "StartDate", "Price"]].rename(columns={"Price": "PH_PriceStar"}),
-                by=["SKU"],
-                on="StartDate",
-                direction="backward",
-                allow_exact_matches=True,
-            )
-            base.loc[missing, "PriceEffective"] = star["PH_PriceStar"].values
-
-    # Final: ensure UnitPrice still wins
-    base["PriceEffective"] = base["UnitPrice"].combine_first(base["PriceEffective"])
-
-    return base
-
-def upsert_sales(existing: pd.DataFrame, new_rows: pd.DataFrame) -> pd.DataFrame:
-    if existing is None or existing.empty:
-        return new_rows.copy()
-    if new_rows is None or new_rows.empty:
-        return existing.copy()
-
-    for c in ["StartDate","EndDate"]:
-        if c in existing.columns:
-            existing[c] = pd.to_datetime(existing[c], errors="coerce")
-        if c in new_rows.columns:
-            new_rows[c] = pd.to_datetime(new_rows[c], errors="coerce")
-
-    key_cols = ["Retailer","SKU","StartDate","EndDate","SourceFile"]
-    combined = pd.concat([existing, new_rows], ignore_index=True)
-    combined = combined.drop_duplicates(subset=key_cols, keep="last")
-    return combined
-
-def append_sales_to_store(new_rows: pd.DataFrame) -> None:
-    if new_rows is None or new_rows.empty:
-        return
-    existing = load_sales_store()
-    combined = upsert_sales(existing, new_rows)
-    combined.to_csv(DEFAULT_SALES_STORE, index=False)
-
-# -------------------------
-# Weekly workbook ingestion
-# -------------------------
-def parse_date_range_from_filename(name: str, year_hint: int):
-    n = name.lower()
-
-    m = re.search(r"(\d{4})[-_/](\d{1,2})[-_/](\d{1,2}).*?(?:thru|through|to|–|-).*?(\d{4})[-_/](\d{1,2})[-_/](\d{1,2})", n)
-    if m:
-        y1, mo1, d1, y2, mo2, d2 = map(int, m.groups())
-        return pd.Timestamp(date(y1, mo1, d1)), pd.Timestamp(date(y2, mo2, d2))
-
-    m = re.search(r"(\d{1,2})[-_/](\d{1,2}).*?(?:thru|through|to|–|-).*?(\d{1,2})[-_/](\d{1,2})", n)
-    if m:
-        mo1, d1, mo2, d2 = map(int, m.groups())
-        y = int(year_hint)
-        return pd.Timestamp(date(y, mo1, d1)), pd.Timestamp(date(y, mo2, d2))
-
-    return None, None
-
-
-def read_weekly_workbook(uploaded_file, year: int) -> pd.DataFrame:
-    """Read a weekly sales workbook where each sheet is a retailer.
-    Expected layout per sheet:
-      - Column A: SKU (no header required)
-      - Column B: Units
-      - Optional Column C: UnitPrice
-    NOTE: Some retailers (e.g. Zoro/HomeSelects) may have only a single data row.
-    Pandas can sometimes interpret that as header-only depending on the engine,
-    so we include an openpyxl fallback to reliably read the first rows.
-    """
-    import openpyxl
-    from io import BytesIO
-
-    # Prefer openpyxl engine for consistency on Streamlit Cloud
-    try:
-        xls = pd.ExcelFile(uploaded_file, engine="openpyxl")
-    except Exception:
-        xls = pd.ExcelFile(uploaded_file)
-
-    fname = getattr(uploaded_file, "name", "upload.xlsx")
-    sdt, edt = parse_date_range_from_filename(fname, year_hint=year)
-    if sdt is None:
-        sdt = pd.Timestamp(date.today() - timedelta(days=7))
-        edt = pd.Timestamp(date.today())
-
-    # Build an openpyxl workbook once for fallback reads
-    wb = None
-    try:
-        data = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
-        wb = openpyxl.load_workbook(BytesIO(data), data_only=True, read_only=True, keep_links=False)
-    except Exception:
-        wb = None
-
-    dfs = []
-    for sh in xls.sheet_names:
-        retailer = _normalize_retailer(sh)
-
-        # Primary read (no headers)
-        try:
-            raw = pd.read_excel(xls, sheet_name=sh, header=None, engine="openpyxl")
-        except Exception:
-            raw = pd.read_excel(xls, sheet_name=sh, header=None)
-
-        # Fallback: if pandas returns empty but the sheet has a single row (common for new retailers)
-        if (raw is None) or (raw.shape[0] == 0) or (raw.shape[1] < 2):
-            if wb is not None and sh in wb.sheetnames:
-                ws = wb[sh]
-                vals = []
-                # read first 500 rows, up to 3 cols, stopping after a run of blanks
-                blank_run = 0
-                for r in range(1, 501):
-                    sku = ws.cell(row=r, column=1).value
-                    units = ws.cell(row=r, column=2).value
-                    price = ws.cell(row=r, column=3).value
-                    if (sku is None or str(sku).strip() == "") and (units is None or str(units).strip() == "") and (price is None or str(price).strip() == ""):
-                        blank_run += 1
-                        if blank_run >= 20:
-                            break
-                        continue
-                    blank_run = 0
-                    vals.append([sku, units, price])
-                if vals:
-                    raw = pd.DataFrame(vals)
-                else:
-                    continue
-            else:
-                continue
-
-        # Keep only first 3 columns
-        raw = raw.iloc[:, :3].copy() if raw.shape[1] >= 3 else raw.iloc[:, :2].copy()
-        raw.columns = ["SKU", "Units", "UnitPrice"] if raw.shape[1] == 3 else ["SKU", "Units"]
-
-        raw["SKU"] = raw["SKU"].map(_normalize_sku)
-        raw["Units"] = pd.to_numeric(raw["Units"], errors="coerce").fillna(0.0)
-
-        if "UnitPrice" in raw.columns:
-            raw["UnitPrice"] = pd.to_numeric(raw["UnitPrice"], errors="coerce")
-        else:
-            raw["UnitPrice"] = np.nan
-
-        raw = raw[raw["SKU"].astype(str).str.strip().ne("")]
-
-        raw["Retailer"] = retailer
-        raw["StartDate"] = pd.to_datetime(sdt)
-        raw["EndDate"] = pd.to_datetime(edt)
-        raw["SourceFile"] = fname
-        if "UnitPrice" not in raw.columns:
-            raw["UnitPrice"] = np.nan
-        dfs.append(raw[["Retailer","SKU","Units","UnitPrice","StartDate","EndDate","SourceFile"]])
-
-    out = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame(columns=["Retailer","SKU","Units","UnitPrice","StartDate","EndDate","SourceFile"])
-    if not out.empty:
-        out["Retailer"] = out["Retailer"].map(_normalize_retailer)
-        out["SKU"] = out["SKU"].map(_normalize_sku)
-        out["StartDate"] = pd.to_datetime(out["StartDate"], errors="coerce")
-        out["EndDate"] = pd.to_datetime(out["EndDate"], errors="coerce")
-    return out
-
-
-# -------------------------
-# Year-Overview (YOW) workbook ingestion
-# -------------------------
-def parse_week_range_header(val, year: int):
-    """Parse headers like '1-1 / 1-3' into (StartDate, EndDate) timestamps.
-    Accepts a few common variants and handles year-crossing weeks (e.g. '12-29 / 1-2').
-    """
-    if val is None:
-        return (None, None)
-    s = str(val).strip()
-    if s == "":
-        return (None, None)
-
-    # Common: 'M-D / M-D' or 'M/D - M/D'
-    m = re.search(r"(\d{1,2})\s*[-/]\s*(\d{1,2})\s*(?:/|to|–|-)+\s*(\d{1,2})\s*[-/]\s*(\d{1,2})", s)
-    if not m:
-        # Variant with explicit months: '1-1 / 1-3' (same as above but stricter)
-        m = re.search(r"(\d{1,2})-(\d{1,2})\s*/\s*(\d{1,2})-(\d{1,2})", s)
-    if not m:
-        return (None, None)
-
-    mo1, d1, mo2, d2 = map(int, m.groups())
-    y1 = int(year)
-    y2 = int(year)
-    # If the end month is earlier than start month, assume it crosses into next year
-    if mo2 < mo1:
-        y2 = y1 + 1
-
-    try:
-        sdt = pd.Timestamp(y1, mo1, d1)
-        edt = pd.Timestamp(y2, mo2, d2)
-        return (sdt, edt)
-    except Exception:
-        return (None, None)
-
-def read_yow_workbook(uploaded_file, year: int) -> pd.DataFrame:
-    """Read a Year Overview workbook:
-    - One sheet per retailer OR a single sheet where A1 is the retailer name.
-    - Row 1 contains week ranges across the top (starting in column B).
-    - Column A contains SKUs (starting row 2).
-    - Cells contain Units.
-    """
-    import openpyxl
-
-    fname = getattr(uploaded_file, "name", "yow.xlsx")
-
-    # openpyxl is fastest/most tolerant for wide sheets
-    wb = openpyxl.load_workbook(uploaded_file, data_only=True, read_only=True, keep_links=False)
-
-    rows_out = []
-
-    for sh in wb.sheetnames:
-        ws = wb[sh]
-
-        # Retailer name: A1 (preferred). If blank, fall back to sheet name.
-        retailer_name = ws["A1"].value
-        retailer = _normalize_retailer(retailer_name if retailer_name not in [None, ""] else sh)
-
-        # Header row: week ranges from B1 onward until blank
-        week_cols = []
-        col = 2  # B
-        while True:
-            v = ws.cell(row=1, column=col).value
-            if v is None or str(v).strip() == "":
-                break
-            sdt, edt = parse_week_range_header(v, year=year)
-            if sdt is None:
-                # Try interpreting as a date (week start) if someone uses real date headers
-                dt = pd.to_datetime(v, errors="coerce")
-                if pd.notna(dt):
-                    sdt = pd.Timestamp(dt).normalize()
-                    edt = sdt + pd.Timedelta(days=6)
-                else:
-                    # stop if header isn't parseable
-                    break
-            if edt is None:
-                edt = sdt + pd.Timedelta(days=6)
-            week_cols.append((col, pd.Timestamp(sdt), pd.Timestamp(edt), str(v).strip()))
-            col += 1
-
-        if not week_cols:
-            continue
-
-        # Data rows: SKUs down column A from row 2 until blank
-        row = 2
-        while True:
-            sku = ws.cell(row=row, column=1).value
-            if sku is None or str(sku).strip() == "":
-                break
-            sku = _normalize_sku(sku)
-
-            for (cidx, sdt, edt, hdr) in week_cols:
-                units = ws.cell(row=row, column=cidx).value
-                if units is None or (isinstance(units, str) and units.strip() == ""):
-                    continue
-                try:
-                    u = float(units)
-                except Exception:
-                    continue
-                if np.isnan(u) or u == 0:
-                    continue
-
-                rows_out.append({
-                    "Retailer": retailer,
-                    "SKU": sku,
-                    "Units": float(u),
-                    "UnitPrice": np.nan,          # use current pricing (vendor map / price history)
-                    "StartDate": pd.to_datetime(sdt),
-                    "EndDate": pd.to_datetime(edt),
-                    "SourceFile": f"{fname}::{sh}",
-                })
-
-            row += 1
-
-    out = pd.DataFrame(rows_out)
-    if not out.empty:
-        out["Retailer"] = out["Retailer"].map(_normalize_retailer)
-        out["SKU"] = out["SKU"].map(_normalize_sku)
-        out["StartDate"] = pd.to_datetime(out["StartDate"], errors="coerce")
-        out["EndDate"] = pd.to_datetime(out["EndDate"], errors="coerce")
-        out["Units"] = pd.to_numeric(out["Units"], errors="coerce").fillna(0.0)
-        out["UnitPrice"] = pd.to_numeric(out["UnitPrice"], errors="coerce")
-    return out
-
-# -------------------------
-# Enrichment / metrics
-# -------------------------
-def enrich_sales(sales: pd.DataFrame, vmap: pd.DataFrame, price_hist: pd.DataFrame | None = None) -> pd.DataFrame:
-    s = sales.copy()
-    s["Retailer"] = s["Retailer"].map(_normalize_retailer)
-    s["SKU"] = s["SKU"].map(_normalize_sku)
-    s["Units"] = pd.to_numeric(s["Units"], errors="coerce").fillna(0.0).astype(float)
-    s["StartDate"] = pd.to_datetime(s["StartDate"], errors="coerce")
-    s["EndDate"] = pd.to_datetime(s["EndDate"], errors="coerce")
-
-    m = vmap[["Retailer","SKU","Vendor","Price","MapOrder"]].copy()
-    # Normalize keys; treat blank Retailer in vendor map as wildcard ("*")
-    m["Retailer"] = m["Retailer"].fillna("*").map(_normalize_retailer)
-    m["Retailer"] = m["Retailer"].replace({"": "*"})
-    m["SKU"] = m["SKU"].map(_normalize_sku)
-    m["Price"] = pd.to_numeric(m["Price"], errors="coerce")
-
-    # 1) Exact match on Retailer + SKU
-    out = s.merge(m[m["Retailer"] != "*"], on=["Retailer","SKU"], how="left")
-
-    # 2) Wildcard match on SKU only for rows still missing pricing/vendor
-    wild = m[m["Retailer"] == "*"][["SKU","Vendor","Price","MapOrder"]].drop_duplicates()
-    if not wild.empty:
-        miss = out["Price"].isna()
-        if miss.any():
-            out2 = out.loc[miss].merge(wild, on=["SKU"], how="left", suffixes=("", "_w"))
-            if "Vendor_w" in out2.columns:
-                out.loc[miss, "Vendor"] = out2["Vendor"].combine_first(out2["Vendor_w"]).values
-            if "Price_w" in out2.columns:
-                out.loc[miss, "Price"] = out2["Price"].combine_first(out2["Price_w"]).values
-            if "MapOrder_w" in out2.columns:
-                out.loc[miss, "MapOrder"] = out2["MapOrder"].combine_first(out2["MapOrder_w"]).values
-
-    # Apply effective-dated pricing (if provided), otherwise fallback to vendor map price
-    ph = price_hist if price_hist is not None else load_price_history()
-    out = apply_effective_prices(out, vmap, ph)
-
-
-    # Compute Sales from Units and effective price (Units-only weekly uploads)
-    out["Units"] = pd.to_numeric(out.get("Units", 0), errors="coerce").fillna(0.0)
-    out["PriceEffective"] = pd.to_numeric(out.get("PriceEffective", np.nan), errors="coerce")
-    out["Sales"] = (out["Units"] * out["PriceEffective"]).fillna(0.0)
-    # Drop rows with no activity to keep 0/0 Retailers & Vendors out of all tables
-    out = out[(pd.to_numeric(out.get("Units"), errors="coerce").fillna(0) > 0) | (pd.to_numeric(out.get("Sales"), errors="coerce").fillna(0) > 0)].copy()
-    return out
-
-
-
-@st.cache_data(show_spinner=False)
-def cached_enrich_sales(store_mtime: float, vmap_path: str, vmap_mtime: float, ph_mtime: float) -> pd.DataFrame:
-    """
-    Cache the expensive enrichment step (merges + effective-dated pricing).
-    Cache is invalidated automatically when:
-      - sales_store.csv changes (store_mtime)
-      - vendor_map.xlsx changes (vmap_mtime)
-      - price_history.csv changes (ph_mtime)
-    """
-    sales_store = load_sales_store()
-    vmap = load_vendor_map(Path(vmap_path))
-    price_hist = load_price_history()
-    return enrich_sales(sales_store, vmap, price_hist)
-def wow_mom_metrics(df: pd.DataFrame) -> dict:
-    out = {"total_units":0.0,"total_sales":0.0,"wow_units":None,"wow_sales":None,"mom_units":None,"mom_sales":None}
-    if df is None or df.empty:
-        return out
-    d = df.copy()
-    d["StartDate"] = pd.to_datetime(d["StartDate"], errors="coerce")
-    out["total_units"] = float(d["Units"].sum())
-    out["total_sales"] = float(d["Sales"].fillna(0).sum())
-
-    periods = sorted(d["StartDate"].dropna().dt.date.unique().tolist())
-    if len(periods) >= 1:
-        cur_p = periods[-1]
-        cur = d[d["StartDate"].dt.date == cur_p]
-        cur_u = cur["Units"].sum()
-        cur_s = cur["Sales"].fillna(0).sum()
-        if len(periods) >= 2:
-            prev_p = periods[-2]
-            prev = d[d["StartDate"].dt.date == prev_p]
-            prev_u = prev["Units"].sum()
-            prev_s = prev["Sales"].fillna(0).sum()
-        else:
-            prev_u = 0.0
-            prev_s = 0.0
-        out["wow_units"] = float(cur_u - prev_u)
-        out["wow_sales"] = float(cur_s - prev_s)
-
-    d["MonthP"] = d["StartDate"].dt.to_period("M")
-    months = sorted(d["MonthP"].dropna().unique().tolist())
-    if len(months) >= 1:
-        cur_m = months[-1]
-        cur = d[d["MonthP"] == cur_m]
-        cur_u = cur["Units"].sum()
-        cur_s = cur["Sales"].fillna(0).sum()
-        if len(months) >= 2:
-            prev_m = months[-2]
-            prev = d[d["MonthP"] == prev_m]
-            prev_u = prev["Units"].sum()
-            prev_s = prev["Sales"].fillna(0).sum()
-        else:
-            prev_u = 0.0
-            prev_s = 0.0
-        out["mom_units"] = float(cur_u - prev_u)
-        out["mom_sales"] = float(cur_s - prev_s)
-
-    return out
-
-def month_label(p: pd.Period) -> str:
-    return p.to_timestamp().strftime("%B %Y")
-
-# -------------------------
-# App UI
-# -------------------------
-BUILD_ID = "BULLETPROOF1"
-
-st.set_page_config(page_title=APP_TITLE, layout="wide")
-
-# --- Company Logo ---
-try:
-    st.image("cornerstone_logo.jpg", width=350)
-except Exception:
-    pass
-
-with st.sidebar:
-    st.header("Dashboard")
-    edit_mode = st.checkbox("Enable Edit Mode", value=False, help="Shows Admin/Edit tools inside the Data Management tab.")
-    this_year = date.today().year
-    view_year = st.selectbox(
-        "View Year",
-        options=list(range(this_year-6, this_year+2)),
-        index=6,  # this_year position within range(this_year-6, this_year+2)
-        key="view_year",
-        help="Filters the dashboard views to the selected year (where applicable).",
-    )
-
-# Minimal sidebar: parsing year defaults to view_year. Upload tools live in Data Management.
-year = int(st.session_state.get("view_year", this_year))
-vm_upload = None
-wk_uploads = []
-
-# Ensure view_year exists for downstream tabs
-view_year = int(st.session_state.get('view_year', year))
-
-
-
-# Load vendor map (persistent)
-BUNDLED_VENDOR_MAP = Path(__file__).parent / "vendor_map.xlsx"
-
-# If a default vendor map hasn't been set yet, seed it from the bundled file in the repo.
-try:
-    if (not DEFAULT_VENDOR_MAP.exists()) and BUNDLED_VENDOR_MAP.exists():
-        DEFAULT_VENDOR_MAP.write_bytes(BUNDLED_VENDOR_MAP.read_bytes())
-except Exception:
-    pass
-
-if vm_upload is not None:
-    tmp = DATA_DIR / "_session_vendor_map.xlsx"
-    tmp.write_bytes(vm_upload.getbuffer())
-    vmap_path_used = str(tmp)
-    vmap = cached_vendor_map(vmap_path_used, _file_mtime(tmp))
-elif DEFAULT_VENDOR_MAP.exists():
-    vmap_path_used = str(DEFAULT_VENDOR_MAP)
-    vmap = cached_vendor_map(vmap_path_used, _file_mtime(DEFAULT_VENDOR_MAP))
-else:
-    st.info("Upload a vendor map to begin.")
-    st.stop()
-
-sales_store = cached_sales_store(_file_mtime(DEFAULT_SALES_STORE))
-price_hist = cached_price_history(_file_mtime(DEFAULT_PRICE_HISTORY))
-df_all_raw = cached_enrich_sales(_file_mtime(DEFAULT_SALES_STORE), vmap_path_used, _file_mtime(Path(vmap_path_used)), _file_mtime(DEFAULT_PRICE_HISTORY))
-
-def _apply_overview_filters(df: pd.DataFrame) -> pd.DataFrame:
-    """(Disabled) Overview drill-down filters removed."""
-    return df
-
-
-# df_all is the filtered view used by most tabs; df_all_raw is always the full dataset
-df_all = df_all_raw
-
-
-def _compute_wow_insights(df_full: pd.DataFrame):
-    """Return (executive_takeaway, drivers_df, opportunities_df) for the latest week."""
-    if df_full is None or df_full.empty:
-        return ("", pd.DataFrame(), pd.DataFrame())
-
-    cur, prev, cur_start, cur_end = _get_current_and_prev_week(df_full)
-    if cur is None or cur.empty:
-        return ("", pd.DataFrame(), pd.DataFrame())
-
-    prev = prev if (prev is not None) else pd.DataFrame(columns=cur.columns)
-
-    cur_s = cur.groupby("SKU", as_index=False)[["Units","Sales"]].sum()
-    prev_s = prev.groupby("SKU", as_index=False)[["Units","Sales"]].sum() if (prev is not None and not prev.empty) else pd.DataFrame(columns=["SKU","Units","Sales"])
-
-    wow = cur_s.merge(prev_s, on="SKU", how="left", suffixes=("_cur","_prev"))
-    wow["Sales_prev"] = wow["Sales_prev"].fillna(0.0)
-    wow["Units_prev"] = wow["Units_prev"].fillna(0.0)
-    wow["WoW Sales"] = wow["Sales_cur"] - wow["Sales_prev"]
-    wow["WoW Units"] = wow["Units_cur"] - wow["Units_prev"]
-
-    drivers = wow.assign(_abs=wow["WoW Sales"].abs()).sort_values("_abs", ascending=False).head(3).drop(columns=["_abs"])
-    drivers_df = drivers.rename(columns={
-        "SKU":"SKU",
-        "Sales_cur":"Sales (This Week)",
-        "Units_cur":"Units (This Week)",
-        "WoW Sales":"WoW Sales ($)",
-        "WoW Units":"WoW Units"
-    })[["SKU","WoW Sales ($)","Sales (This Week)","Units (This Week)","WoW Units"]]
-
-    opportunities = wow[wow["WoW Sales"] > 0].sort_values("WoW Sales", ascending=False).head(10)
-    opp_df = opportunities.rename(columns={
-        "SKU":"SKU",
-        "Sales_cur":"Sales (This Week)",
-        "Units_cur":"Units (This Week)",
-        "WoW Sales":"WoW Sales ($)",
-        "WoW Units":"WoW Units"
-    })[["SKU","WoW Sales ($)","Sales (This Week)","Units (This Week)","WoW Units"]]
-
-    total_sales_cur = float(cur["Sales"].sum())
-    total_sales_prev = float(prev["Sales"].sum()) if (prev is not None and not prev.empty) else 0.0
-    wow_sales_total = total_sales_cur - total_sales_prev
-
-    # Build a one-line takeaway
-    def _money(v):
-        try:
-            v = float(v)
-        except Exception:
             return "—"
-        return f"-${abs(v):,.0f}" if v < 0 else f"${v:,.0f}"
 
-    top_neg = wow.sort_values("WoW Sales").head(1)
-    top_pos = wow.sort_values("WoW Sales", ascending=False).head(1)
-    neg_txt = ""
-    pos_txt = ""
-    if not top_neg.empty and float(top_neg["WoW Sales"].iloc[0]) < 0:
-        neg_txt = f"biggest headwind was SKU {str(top_neg['SKU'].iloc[0])} ({_money(top_neg['WoW Sales'].iloc[0])})."
-    if not top_pos.empty and float(top_pos["WoW Sales"].iloc[0]) > 0:
-        pos_txt = f"Top offset/opportunity was SKU {str(top_pos['SKU'].iloc[0])} (+{_money(top_pos['WoW Sales'].iloc[0]).lstrip('-')})."
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="H1", parent=styles["Heading1"], fontSize=16, leading=18, spaceAfter=8))
+    styles.add(ParagraphStyle(name="H2", parent=styles["Heading2"], fontSize=12, leading=14, spaceAfter=6))
+    styles.add(ParagraphStyle(name="Body", parent=styles["Normal"], fontSize=9.5, leading=12))
+    styles.add(ParagraphStyle(name="Small", parent=styles["Normal"], fontSize=8, leading=10, textColor=colors.HexColor("#6b7280")))
+    styles.add(ParagraphStyle(name="Big", parent=styles["Normal"], fontSize=18, leading=20, spaceAfter=0))
 
-    direction = "up" if wow_sales_total > 0 else ("down" if wow_sales_total < 0 else "flat")
-    takeaway = f"WoW sales were {direction} {_money(wow_sales_total)}. " + (neg_txt + " " if neg_txt else "") + (pos_txt if pos_txt else "")
-    takeaway = takeaway.strip()
+    def _wow_color(v):
+        """Green for positive, red for negative, neutral for zero/unknown."""
+        try:
+            s = str(v)
+            import re as _re
+            s2 = _re.sub(r"[^0-9\-\.]", "", s)
+            if s2 in ("", "-", ".", "-."):
+                raise ValueError("no number")
+            x = float(s2)
+            if x > 0:
+                return colors.HexColor("#2ecc71")
+            if x < 0:
+                return colors.HexColor("#e74c3c")
+        except Exception:
+            pass
+        return colors.HexColor("#111827")
 
-    return (takeaway, drivers_df, opp_df)
-# ------------
+    def _make_table(df: pd.DataFrame,
+                    header_bg="#111827",
+                    max_rows=12,
+                    col_widths=None,
+                    wow_cols=None,
+                    right_align_cols=None):
+        if df is None or df.empty:
+            return Paragraph("No data.", styles["Body"])
 
-# (Sidebar PDF export removed — exports live in Executive Summary + Comparisons)
+        wow_cols = wow_cols or []
+        tshow = df.copy().head(max_rows)
 
-# KPIs across top (always current calendar year)
-df_kpi = df_all.copy()
-df_kpi["StartDate"] = pd.to_datetime(df_kpi["StartDate"], errors="coerce")
-df_kpi = df_kpi[df_kpi["StartDate"].dt.year == int(this_year)].copy()
+        # Basic formatting
+        disp = tshow.copy()
+        for c in disp.columns:
+            cn = str(c).lower()
+            ser = disp[c]
+            num = pd.to_numeric(ser, errors="coerce")
+            if num.notna().any():
+                if ("sale" in cn) or ("revenue" in cn) or ("$" in cn):
+                    disp[c] = num.map(lambda v: "—" if pd.isna(v) else (f"-${abs(v):,.2f}" if float(v) < 0 else f"${float(v):,.2f}"))
+                elif ("unit" in cn) or ("qty" in cn) or ("quantity" in cn):
+                    disp[c] = num.map(lambda v: "—" if pd.isna(v) else f"{int(round(float(v))):,}")
+                elif ("%" in cn) or ("pct" in cn):
+                    disp[c] = num.map(lambda v: "—" if pd.isna(v) else f"{float(v)*100:+.1f}%")
+                else:
+                    disp[c] = num.map(lambda v: "—" if pd.isna(v) else (f"{int(round(float(v))):,}" if abs(float(v)-round(float(v))) < 1e-9 else f"{float(v):,.2f}"))
+            else:
+                disp[c] = ser.astype(str)
 
-# Apply view-year filter for all reporting tabs
-df = df_all.copy()
-df["StartDate"] = pd.to_datetime(df["StartDate"], errors="coerce")
-df = df[df["StartDate"].dt.year == int(view_year)].copy()
+        data = [disp.columns.tolist()] + disp.values.tolist()
+        tbl = Table(data, hAlign="LEFT", colWidths=col_widths)
 
-# KPIs across top
-m_all = wow_mom_metrics(df_kpi)
+        base = [
+            ("BACKGROUND",(0,0),(-1,0), colors.HexColor(header_bg)),
+            ("TEXTCOLOR",(0,0),(-1,0), colors.white),
+            ("FONTNAME",(0,0),(-1,0), "Helvetica-Bold"),
+            ("FONTSIZE",(0,0),(-1,0), 9),
+            ("GRID",(0,0),(-1,-1), 0.25, colors.HexColor("#d1d5db")),
+            ("FONTNAME",(0,1),(-1,-1), "Helvetica"),
+            ("FONTSIZE",(0,1),(-1,-1), 8),
+            ("ROWBACKGROUNDS",(0,1),(-1,-1), [colors.white, colors.HexColor("#f9fafb")]),
+            ("VALIGN",(0,0),(-1,-1), "TOP"),
+            ("LEFTPADDING",(0,0),(-1,-1), 4),
+            ("RIGHTPADDING",(0,0),(-1,-1), 4),
+            ("TOPPADDING",(0,0),(-1,-1), 3),
+            ("BOTTOMPADDING",(0,0),(-1,-1), 3),
+        ]
 
-st.markdown("## 📊 Overview (All Retailers)")
+        if right_align_cols:
+            for col in right_align_cols:
+                if col in tshow.columns:
+                    j = tshow.columns.get_loc(col)
+                    base.append(("ALIGN",(j,1),(j,-1),"RIGHT"))
+                    base.append(("ALIGN",(j,0),(j,0),"RIGHT"))
 
-# Build richer top metrics: YTD + This Week vs Prev Week + This Month vs Prev Month + Last 8 Weeks vs Prev 8 Weeks
-d_top = df_kpi.copy()
-d_top["StartDate"] = pd.to_datetime(d_top["StartDate"], errors="coerce")
-d_top["EndDate"] = pd.to_datetime(d_top["EndDate"], errors="coerce")
+        # Colorize delta columns
+        for col in wow_cols:
+            if col in tshow.columns:
+                j = tshow.columns.get_loc(col)
+                for i in range(1, len(data)):
+                    base.append(("TEXTCOLOR",(j,i),(j,i), _wow_color(data[i][j])))
+                    base.append(("FONTNAME",(j,i),(j,i), "Helvetica-Bold"))
 
-# YTD
-ytd_units = float(pd.to_numeric(d_top.get("Units"), errors="coerce").fillna(0).sum())
-ytd_sales = float(pd.to_numeric(d_top.get("Sales"), errors="coerce").fillna(0).sum())
+        tbl.setStyle(TableStyle(base))
+        return tbl
 
-# Weekly totals
-weeks = sorted(d_top["StartDate"].dropna().dt.date.unique().tolist())
-cur_week_total = 0.0
-prev_week_total = 0.0
-if len(weeks) >= 1:
-    cur_w = weeks[-1]
-    cur_week_total = float(d_top.loc[d_top["StartDate"].dt.date == cur_w, "Sales"].fillna(0).sum())
-if len(weeks) >= 2:
-    prev_w = weeks[-2]
-    prev_week_total = float(d_top.loc[d_top["StartDate"].dt.date == prev_w, "Sales"].fillna(0).sum())
-wow_diff_sales = cur_week_total - prev_week_total
+    generated = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-# Monthly totals
-d_top["MonthP"] = d_top["StartDate"].dt.to_period("M")
-months = sorted(d_top["MonthP"].dropna().unique().tolist())
-cur_month_total = 0.0
-prev_month_total = 0.0
-if len(months) >= 1:
-    cm = months[-1]
-    cur_month_total = float(d_top.loc[d_top["MonthP"] == cm, "Sales"].fillna(0).sum())
-if len(months) >= 2:
-    pm = months[-2]
-    prev_month_total = float(d_top.loc[d_top["MonthP"] == pm, "Sales"].fillna(0).sum())
-mom_diff_sales = cur_month_total - prev_month_total
+    # Use the same header/footer design as the weekly executive PDF
+    def _on_page(canv: pdfcanvas.Canvas, doc):
+        canv.saveState()
+        w_, h_ = letter
+        canv.setFillColor(colors.HexColor("#111827"))
+        canv.rect(0, h_-0.65*inch, w_, 0.65*inch, fill=1, stroke=0)
 
-# Last 8 weeks vs prior 8 weeks (by EndDate)
-d8 = d_top.dropna(subset=["EndDate"]).copy()
-d8 = d8.sort_values("EndDate")
-end_weeks = sorted(d8["EndDate"].dt.date.unique().tolist())
-last8_total = 0.0
-prev8_total = 0.0
-if len(end_weeks) >= 1:
-    last8 = end_weeks[-8:]
-    prev8 = end_weeks[-16:-8] if len(end_weeks) >= 16 else []
-    last8_total = float(d8.loc[d8["EndDate"].dt.date.isin(last8), "Sales"].fillna(0).sum())
-    prev8_total = float(d8.loc[d8["EndDate"].dt.date.isin(prev8), "Sales"].fillna(0).sum()) if prev8 else 0.0
-last8_diff = last8_total - prev8_total
+        # Logo if present
+        logo_path = "cornerstone_logo.jpg"
+        if logo_path and _os.path.exists(logo_path):
+            try:
+                canv.drawImage(logo_path, 0.55*inch, h_-0.60*inch, width=1.3*inch, height=0.45*inch,
+                               mask='auto', preserveAspectRatio=True, anchor='sw')
+            except Exception:
+                pass
 
-def _delta_badge(val, is_money=True):
-    if val is None:
-        return ""
-    try:
-        v = float(val)
-    except Exception:
-        return ""
-    if is_money:
-        s = f"-${abs(v):,.0f}" if v < 0 else f"${v:,.0f}"
+        canv.setFillColor(colors.white)
+        canv.setFont("Helvetica-Bold", 12)
+        canv.drawString(2.1*inch, h_-0.40*inch, title)
+
+        canv.setFont("Helvetica", 9)
+        canv.drawRightString(w_-0.55*inch, h_-0.40*inch, f"Generated: {generated}")
+
+        canv.setFillColor(colors.HexColor("#6b7280"))
+        canv.setFont("Helvetica", 8)
+        canv.drawString(0.55*inch, 0.45*inch, "Cornerstone Products Group – Confidential (Internal Use Only)")
+        canv.drawRightString(w_-0.55*inch, 0.45*inch, f"Page {doc.page}")
+        canv.restoreState()
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter,
+                            leftMargin=0.55*inch, rightMargin=0.55*inch,
+                            topMargin=0.85*inch, bottomMargin=0.7*inch)
+    story = []
+
+    # -------------------------
+    # PAGE 1 — Comparison Snapshot
+    # -------------------------
+    story.append(Spacer(1, 0.15*inch))
+    story.append(Paragraph("Comparison Snapshot", styles["H1"]))
+    if subtitle:
+        story.append(Paragraph(subtitle, styles["Small"]))
+        story.append(Spacer(1, 0.10*inch))
+
+    # KPI / Totals panel (styled like Executive Snapshot)
+    salesA = totals.get("SalesA", 0)
+    salesB = totals.get("SalesB", 0)
+    salesD = totals.get("SalesDiff", 0)
+    salesP = totals.get("SalesPct", None)
+
+    unitsA = totals.get("UnitsA", 0)
+    unitsB = totals.get("UnitsB", 0)
+    unitsD = totals.get("UnitsDiff", 0)
+    unitsP = totals.get("UnitsPct", None)
+
+    # Two "hero" KPIs (Sales, Units) displayed bigger
+    hero_tbl = Table([
+        ["Sales", Paragraph(f"<b>{_money(salesB)}</b>", styles["Big"]), Paragraph(f"<font color='{_wow_color(salesD).hexval()}'><b>{_money(salesD)}</b></font>  {_pct(salesP)}", styles["Body"])],
+        ["Units", Paragraph(f"<b>{_int(unitsB)}</b>", styles["Big"]), Paragraph(f"<font color='{_wow_color(unitsD).hexval()}'><b>{_int(unitsD)}</b></font>  {_pct(unitsP)}", styles["Body"])],
+    ], colWidths=[0.9*inch, 2.2*inch, 2.6*inch])
+    hero_tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,-1), colors.HexColor("#f3f4f6")),
+        ("BOX",(0,0),(-1,-1), 0.5, colors.HexColor("#d1d5db")),
+        ("INNERGRID",(0,0),(-1,-1), 0.25, colors.HexColor("#e5e7eb")),
+        ("FONTNAME",(0,0),(0,-1), "Helvetica-Bold"),
+        ("VALIGN",(0,0),(-1,-1), "MIDDLE"),
+        ("LEFTPADDING",(0,0),(-1,-1), 8),
+        ("RIGHTPADDING",(0,0),(-1,-1), 8),
+        ("TOPPADDING",(0,0),(-1,-1), 8),
+        ("BOTTOMPADDING",(0,0),(-1,-1), 8),
+    ]))
+    story.append(hero_tbl)
+    story.append(Spacer(1, 0.18*inch))
+
+    # Small details (A vs B) like the executive snapshot style
+    kpi_lines = [
+        ["Sales A", _money(salesA)],
+        ["Sales B", _money(salesB)],
+        ["Units A", _int(unitsA)],
+        ["Units B", _int(unitsB)],
+    ]
+    kpi_tbl = Table(kpi_lines, colWidths=[1.25*inch, 1.55*inch])
+    kpi_tbl.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,-1), colors.HexColor("#ffffff")),
+        ("BOX",(0,0),(-1,-1), 0.5, colors.HexColor("#d1d5db")),
+        ("INNERGRID",(0,0),(-1,-1), 0.25, colors.HexColor("#e5e7eb")),
+        ("FONTNAME",(0,0),(0,-1), "Helvetica-Bold"),
+        ("FONTSIZE",(0,0),(-1,-1), 9),
+        ("LEFTPADDING",(0,0),(-1,-1), 6),
+        ("RIGHTPADDING",(0,0),(-1,-1), 6),
+        ("TOPPADDING",(0,0),(-1,-1), 4),
+        ("BOTTOMPADDING",(0,0),(-1,-1), 4),
+    ]))
+
+    story.append(kpi_tbl)
+    story.append(Spacer(1, 0.18*inch))
+
+    # Top Retailers (ALL retailers, styled like the executive tables)
+    story.append(Paragraph("Retailers (A vs B)", styles["H2"]))
+    rt = retailer_tbl.copy() if retailer_tbl is not None else pd.DataFrame()
+    if not rt.empty:
+        # Ensure consistent column names
+        # Expecting: Retailer, UnitsA, SalesA, UnitsB, SalesB, Sales_Diff, Units_Diff, Sales_Pct
+        # We'll try to map common variants.
+        colmap = {c.lower(): c for c in rt.columns}
+        def _pick(*names):
+            for nm in names:
+                if nm.lower() in colmap:
+                    return colmap[nm.lower()]
+            return None
+
+        c_ret = _pick("Retailer", "Store")
+        c_ua  = _pick("UnitsA", "Units_A", "Units (A)", "Units A")
+        c_sa  = _pick("SalesA", "Sales_A", "Sales (A)", "Sales A")
+        c_ub  = _pick("UnitsB", "Units_B", "Units (B)", "Units B")
+        c_sb  = _pick("SalesB", "Sales_B", "Sales (B)", "Sales B")
+        c_sd  = _pick("Sales_Diff", "SalesDiff", "Sales Δ", "DeltaSales", "Sales Change")
+        c_ud  = _pick("Units_Diff", "UnitsDiff", "Units Δ", "DeltaUnits", "Units Change")
+        c_sp  = _pick("SalesPct", "Sales_Pct", "%∆Sales", "PctSales", "Sales %")
+
+        use_cols = [c_ret, c_ub, c_sb, c_ud, c_sd, c_sp]
+        use_cols = [c for c in use_cols if c is not None]
+
+        rt2 = rt[use_cols].copy()
+        # Rename columns for display
+        rename = {}
+        if c_ret: rename[c_ret] = "Retailer"
+        if c_ub: rename[c_ub] = "Units"
+        if c_sb: rename[c_sb] = "Sales"
+        if c_ud: rename[c_ud] = "WoW Units"
+        if c_sd: rename[c_sd] = "WoW $ Diff"
+        if c_sp: rename[c_sp] = "%∆Sales"
+        rt2 = rt2.rename(columns=rename)
+
+        story.append(_make_table(rt2, max_rows=60,
+                                 wow_cols=[c for c in ["WoW $ Diff", "WoW Units", "%∆Sales"] if c in rt2.columns],
+                                 right_align_cols=[c for c in rt2.columns if c != "Retailer"]))
     else:
-        s = f"{int(v):,}"
-    color = "#1f8f4c" if v > 0 else ("#c43d3d" if v < 0 else "#777")
-    # small circle-style badge
-    return f"<div style='margin-top:4px; font-size:12px; color:{color};'><span style='display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid {color};'>{s}</span></div>"
+        story.append(Paragraph("No retailer rows for this selection.", styles["Body"]))
 
-def _card(title, value, delta_html=""):
-    return f"""<div class='kpi-card'>
-        <div class='kpi-label'>{title}</div>
-        <div class='kpi-value'>{value}</div>
-        {delta_html}
-    </div>"""
+    story.append(PageBreak())
 
+    # -------------------------
+    # PAGE 2 — Operational Movement
+    # -------------------------
+    story.append(Spacer(1, 0.15*inch))
+    story.append(Paragraph("Operational Movement", styles["H1"]))
 
+    # Top Drivers
+    story.append(Paragraph("Top 5 Drivers of Sales Change", styles["H2"]))
+    ddf = drivers.copy() if drivers is not None else pd.DataFrame()
+    if not ddf.empty:
+        # Normalize expected columns
+        d_cols = []
+        for cand in ["SKU", "Sales_Diff", "Units_Diff", "Momentum"]:
+            if cand in ddf.columns:
+                d_cols.append(cand)
+        dshow = ddf[d_cols].copy()
+        dshow = dshow.rename(columns={"Sales_Diff":"WoW Sales ($)", "Units_Diff":"WoW Units"})
+        story.append(_make_table(dshow, max_rows=5,
+                                 wow_cols=[c for c in ["WoW Sales ($)", "WoW Units"] if c in dshow.columns],
+                                 right_align_cols=[c for c in dshow.columns if c != "SKU" and c != "Momentum"]))
+    else:
+        story.append(Paragraph("No driver rows for this selection.", styles["Body"]))
 
-# --- Top header KPIs (native Streamlit; theme-aware) ---
-def _fmt_delta_money(v) -> str:
+    story.append(Spacer(1, 0.15*inch))
+
+    # SKU movers (up/down)
+    story.append(Paragraph("Top Increase SKUs", styles["H2"]))
+    up = sku_up.copy() if sku_up is not None else pd.DataFrame()
+    if not up.empty:
+        cols = [c for c in ["SKU","Sales_Diff","Units_Diff"] if c in up.columns]
+        up2 = up[cols].copy().rename(columns={"Sales_Diff":"WoW Sales ($)","Units_Diff":"WoW Units"})
+        story.append(_make_table(up2, max_rows=10,
+                                 wow_cols=[c for c in ["WoW Sales ($)","WoW Units"] if c in up2.columns],
+                                 right_align_cols=[c for c in up2.columns if c != "SKU"]))
+    else:
+        story.append(Paragraph("—", styles["Body"]))
+
+    story.append(Spacer(1, 0.12*inch))
+
+    story.append(Paragraph("Top Decrease SKUs", styles["H2"]))
+    dn = sku_down.copy() if sku_down is not None else pd.DataFrame()
+    if not dn.empty:
+        cols = [c for c in ["SKU","Sales_Diff","Units_Diff"] if c in dn.columns]
+        dn2 = dn[cols].copy().rename(columns={"Sales_Diff":"WoW Sales ($)","Units_Diff":"WoW Units"})
+        story.append(_make_table(dn2, max_rows=10,
+                                 wow_cols=[c for c in ["WoW Sales ($)","WoW Units"] if c in dn2.columns],
+                                 right_align_cols=[c for c in dn2.columns if c != "SKU"]))
+    else:
+        story.append(Paragraph("—", styles["Body"]))
+
+    story.append(PageBreak())
+
+    # -------------------------
+    # PAGE 3 — Strategic Momentum
+    # -------------------------
+    story.append(Spacer(1, 0.15*inch))
+    story.append(Paragraph("Strategic Momentum", styles["H1"]))
+    story.append(Paragraph("Momentum Leaders (Selected Filter)", styles["H2"]))
+
+    mm = momentum.copy() if momentum is not None else pd.DataFrame()
+    if not mm.empty:
+        # Prefer the same columns as the executive momentum table if present
+        pref = [c for c in ["SKU","Momentum","Up Weeks","Down Weeks","Units_Last","Sales_Last","Streak"] if c in mm.columns]
+        if not pref:
+            pref = mm.columns.tolist()
+        mshow = mm[pref].copy().head(15)
+
+        # Rename common variants
+        ren = {}
+        if "Streak" in mshow.columns: ren["Streak"] = "Momentum"
+        if "Sales_Last" in mshow.columns: ren["Sales_Last"] = "Sales_Last"
+        if "Units_Last" in mshow.columns: ren["Units_Last"] = "Units_Last"
+        mshow = mshow.rename(columns=ren)
+
+        story.append(_make_table(mshow, max_rows=15,
+                                 right_align_cols=[c for c in mshow.columns if c != "SKU"]))
+    else:
+        story.append(Paragraph("No momentum rows for this selection.", styles["Body"]))
+
     try:
-        x = float(v)
-    except Exception:
-        return ""
-    if x > 0:
-        return f"+${x:,.2f}"
-    if x < 0:
-        return f"-${abs(x):,.2f}"
-    return "$0.00"
-
-
-# Overview header (auto dark/light)
-st.markdown("""
-<style>
-@media (prefers-color-scheme: dark) {
-  .overview-title { color: #ffffff; }
-}
-@media (prefers-color-scheme: light) {
-  .overview-title { color: #000000; }
-}
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown(
-    "<div class='overview-title' style='font-size:22px; font-weight:700; margin-top:8px;'>"
-    "Overview (All Retailers)"
-    "</div>",
-    unsafe_allow_html=True
-)
-
-c1, c2, c3, c4 = st.columns([1.1, 1.0, 1.0, 1.0])
-
-with c1:
-    st.metric("Total Units (YTD)", fmt_int(ytd_units))
-    st.metric("Total Sales (YTD)", fmt_currency(ytd_sales))
-
-with c2:
-    st.metric("This Week Sales", fmt_currency(cur_week_total), delta=_fmt_delta_money(wow_diff_sales))
-
-with c3:
-    st.metric("This Month Sales", fmt_currency(cur_month_total), delta=_fmt_delta_money(mom_diff_sales))
-
-with c4:
-    st.metric("Last 8 Weeks Sales", fmt_currency(last8_total), delta=_fmt_delta_money(last8_diff))
-
-st.divider()
-
-
-
-# -------------------------
-# Reporting helpers
-# -------------------------
-def week_labels(df_in: pd.DataFrame) -> list[str]:
-    if df_in is None or df_in.empty:
-        return []
-    w = sorted(pd.to_datetime(df_in["StartDate"], errors="coerce").dropna().dt.date.unique().tolist())
-    return [pd.Timestamp(x).strftime("%m-%d") for x in w]
-
-def add_week_col(d: pd.DataFrame) -> pd.DataFrame:
-    d = d.copy()
-    d["StartDate"] = pd.to_datetime(d["StartDate"], errors="coerce")
-    d["Week"] = d["StartDate"].dt.date
-    return d
-
-def nonzero_mean_rowwise(frame: pd.DataFrame) -> pd.Series:
-    """Mean across columns, ignoring zeros (treat zeros as missing)."""
-    return frame.replace(0, np.nan).mean(axis=1)
-
-def last_n_weeks(df_in: pd.DataFrame, n: int):
-    if df_in is None or df_in.empty:
-        return []
-    w = sorted(pd.to_datetime(df_in["StartDate"], errors="coerce").dropna().dt.date.unique().tolist())
-    return w[-n:] if len(w) >= n else w
-
-def safe_div(a, b):
-    try:
-        if b == 0 or pd.isna(b):
-            return np.nan
-        return a / b
-    except Exception:
-        return np.nan
-
-def to_pdf_bytes(title: str, sections: list[tuple[str, list[str]]]) -> bytes:
-    """
-    Build a simple PDF summary.
-    sections: list of (heading, lines[])
-    """
-    try:
-        from reportlab.lib.pagesizes import letter
-        from reportlab.pdfgen import canvas
-        from reportlab.lib.units import inch
+        doc.build(story, onFirstPage=_on_page, onLaterPages=_on_page)
     except Exception:
         return b""
 
-    import io
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=letter)
-    width, height = letter
-    x = 0.75 * inch
-    y = height - 0.75 * inch
-
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(x, y, title)
-    y -= 0.35 * inch
-
-    for heading, lines in sections:
-        if y < 1.0 * inch:
-            c.showPage()
-            y = height - 0.75 * inch
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(x, y, heading)
-        y -= 0.22 * inch
-        c.setFont("Helvetica", 10)
-        for ln in lines:
-            if y < 1.0 * inch:
-                c.showPage()
-                y = height - 0.75 * inch
-                c.setFont("Helvetica", 10)
-            c.drawString(x, y, str(ln)[:120])
-            y -= 0.18 * inch
-        y -= 0.10 * inch
-
-    c.save()
+    buf.seek(0)
     return buf.getvalue()
 
 
