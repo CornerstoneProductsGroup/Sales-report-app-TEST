@@ -1551,108 +1551,24 @@ except Exception:
     pass
 
 with st.sidebar:
-    st.header("Data Inputs")
-    edit_mode = st.checkbox("Enable Edit Mode (edit Vendor/Price)", value=False)
-
+    st.header("Dashboard")
+    edit_mode = st.checkbox("Enable Edit Mode", value=False, help="Shows Admin/Edit tools inside the Data Management tab.")
     this_year = date.today().year
-    year = st.selectbox("Year (for filename date parsing)", options=list(range(this_year-3, this_year+2)), index=3)
-    view_year = st.selectbox("View Year (dashboard)", options=list(range(this_year-3, this_year+2)), index=3, key="view_year")
+    view_year = st.selectbox(
+        "View Year",
+        options=list(range(this_year-6, this_year+2)),
+        index=6,  # this_year position within range(this_year-6, this_year+2)
+        key="view_year",
+        help="Filters the dashboard views to the selected year (where applicable).",
+    )
 
-    st.subheader("Vendor Map")
-    vm_upload = st.file_uploader("Upload Vendor Map (.xlsx)", type=["xlsx"], key="vm_up")
-
-    # Backup / Restore (sidebar)
-    st.markdown("---")
-    with st.expander("Backup / Restore", expanded=False):
-        st.caption("Download your sales data as a CSV, or restore by uploading the CSV back in.")
-        # Download sales store CSV (no zip)
-        if DEFAULT_SALES_STORE.exists():
-            dl_name = "sales_store.csv"
-            st.download_button(
-                "Download Sales Data (CSV)",
-                data=DEFAULT_SALES_STORE.read_bytes(),
-                file_name=dl_name,
-                mime="text/csv",
-                key="sb_download_sales_store_csv",
-            )
-        else:
-            st.warning("No sales_store.csv found yet in the data folder.")
-
-        st.markdown("---")
-
-        # Restore sales store CSV (no zip)
-        # Upload first, then click Restore. This avoids Streamlit "reloading…" hangs.
-        if "sb_restore_uploader_key" not in st.session_state:
-            st.session_state.sb_restore_uploader_key = 0
-
-        up_csv = st.file_uploader(
-            "Restore: upload sales_store.csv",
-            type=["csv"],
-            key=f"sb_restore_sales_store_csv_{st.session_state.sb_restore_uploader_key}",
-        )
-
-        do_restore = st.button(
-            "Restore sales_store.csv",
-            disabled=(up_csv is None),
-            use_container_width=True,
-            key="sb_btn_restore_sales_store_csv",
-        )
-
-        if do_restore and up_csv is not None:
-            try:
-                DEFAULT_SALES_STORE.write_bytes(up_csv.getvalue())
-                # Clear cached data so the app immediately reflects the restored file
-                st.cache_data.clear()
-                # Reset uploader so you don't need to click the X
-                st.session_state.sb_restore_uploader_key += 1
-                st.success("Sales data restored (sales_store.csv). Reloading…")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Restore failed: {e}")
-    a, b = st.columns(2)
-    with a:
-        if st.button("Use uploaded as default", disabled=vm_upload is None):
-            DEFAULT_VENDOR_MAP.write_bytes(vm_upload.getbuffer())
-            st.success("Saved as default vendor map.")
-            st.rerun()
-    with b:
-        if st.button("Reload"):
-            st.rerun()
-
-    st.subheader("Weekly Sales Workbooks")
-    wk_uploads = st.file_uploader("Upload weekly sales workbook(s) (.xlsx)", type=["xlsx"], accept_multiple_files=True, key="wk_up")
-    if st.button("Ingest uploads", disabled=not wk_uploads):
-        all_new = []
-        prog = st.progress(0, text="Reading workbooks…")
-        total = len(wk_uploads)
-        for i, f in enumerate(wk_uploads, start=1):
-            try:
-                new_rows = read_weekly_workbook(f, year=year)
-                if new_rows is not None and not new_rows.empty:
-                    all_new.append(new_rows)
-            except Exception as e:
-                st.error(f"Failed to read {getattr(f, 'name', 'upload')}: {e}")
-            prog.progress(i / max(total, 1), text=f"Reading workbooks… ({i}/{total})")
-        prog.empty()
-
-        if all_new:
-            combined_new = pd.concat(all_new, ignore_index=True)
-            append_sales_to_store(combined_new)
-            st.success(f"Ingested {len(all_new)} workbook(s) into the sales store.")
-        else:
-            st.info("No rows found in the uploaded workbooks.")
-        st.rerun()
-
-    st.divider()
-    if st.button("Clear ALL stored sales data"):
-        if DEFAULT_SALES_STORE.exists():
-            DEFAULT_SALES_STORE.unlink()
-        st.warning("Sales store cleared.")
-        st.rerun()
-
+# Minimal sidebar: parsing year defaults to view_year. Upload tools live in Data Management.
+year = int(st.session_state.get("view_year", this_year))
+vm_upload = None
+wk_uploads = []
 
 # Ensure view_year exists for downstream tabs
-view_year = st.session_state.get('view_year', year)
+view_year = int(st.session_state.get('view_year', year))
 
 
 
@@ -4355,33 +4271,46 @@ def make_totals_tables(base: pd.DataFrame, group_col: str, tf_weeks, avg_weeks):
 # -------------------------
 # Tabs (top navigation)
 # -------------------------
-(tab_overview,
- tab_totals_dash,
- tab_momentum,
- tab_action_center,
- tab_top_skus,
- tab_exec,
- tab_comparisons,
- tab_wow_exc,
- tab_sku_intel,
- tab_forecasting,
- tab_year_summary,
- tab_alerts,
- tab_data_mgmt) = st.tabs([
+# -------------------------
+# Main navigation (Product layout)
+# -------------------------
+(main_overview, main_explorer, main_comparisons, main_data_center, main_admin) = st.tabs([
     "Overview",
-    "Totals Dashboards",
-    "Momentum",
-    "Action Center",
-    "Top SKUs",
-    "Executive Summary",
+    "Sales Explorer",
     "Comparisons",
-    "WoW Exceptions",
-    "SKU Intelligence",
-    "Forecasting",
-    "Year Summary",
-    "Alerts",
-    "Data Management",
+    "Data Center",
+    "Admin",
 ])
+
+# Sub-tabs (keeps existing render_* functions working without rewriting them)
+with main_overview:
+    tab_overview, tab_exec = st.tabs(["Overview", "Executive Summary"])
+
+with main_explorer:
+    (tab_totals_dash,
+     tab_momentum,
+     tab_action_center,
+     tab_top_skus,
+     tab_sku_intel,
+     tab_forecasting,
+     tab_year_summary,
+     tab_alerts) = st.tabs([
+        "Totals",
+        "Momentum",
+        "Action Center",
+        "Top SKUs",
+        "SKU Intelligence",
+        "Forecasting",
+        "Year Summary",
+        "Alerts",
+    ])
+
+with main_comparisons:
+    tab_comparisons, tab_wow_exc = st.tabs(["Comparisons", "WoW Exceptions"])
+
+# Data Center + Admin are single panes
+tab_data_center = main_data_center
+tab_admin = main_admin
 
 
 
@@ -6737,40 +6666,119 @@ def render_tab_alerts():
 
 
 
-def render_tab_data_mgmt():
-    with tab_data_mgmt:
-        st.subheader("Data Management")
+def render_tab_data_center():
+    with tab_data_center:
+        st.subheader("Data Center")
 
+        # Coverage summary
         st.markdown("### Data coverage")
         render_data_coverage_panel(df_all)
 
         st.markdown("---")
 
+        st.markdown("### Uploads")
+        st.caption("All uploads live here (sidebar stays minimal).")
+
+        # Bulk data upload (weekly + YOW workbooks)
+        if "render_bulk_data_upload" in globals():
+            render_bulk_data_upload()
+        else:
+            st.info("Bulk Data Upload tool not available in this build.")
+
+
+def render_tab_admin():
+    with tab_admin:
+        st.subheader("Admin")
+
+        if not edit_mode:
+            st.info("Enable **Edit Mode** in the sidebar to access admin tools.")
+            return
+
         tool = st.selectbox(
-            "Tools",
-            options=["Bulk Data Upload", "Edit Vendor Map", "Backup / Restore"],
+            "Admin tools",
+            options=["Edit Vendor Map", "Backup / Restore", "Year Locks", "Cache Tools"],
             index=0,
-            key="dm_tool",
+            key="admin_tool",
         )
 
-        if tool == "Bulk Data Upload":
-            if "render_bulk_data_upload" in globals():
-                render_bulk_data_upload()
-            else:
-                st.info("Bulk Data Upload is not available in this build.")
-
-        elif tool == "Edit Vendor Map":
+        if tool == "Edit Vendor Map":
             if "render_edit_vendor_map" in globals():
                 render_edit_vendor_map()
             else:
-                st.info("Vendor Map editor is not available in this build.")
+                st.info("Vendor map editor not available in this build.")
 
-        else:
-            if "render_backup_restore" in globals():
-                render_backup_restore()
-            else:
-                st.info("Backup / Restore is not available in this build.")
+        elif tool == "Backup / Restore":
+            st.markdown("### Backup")
+            st.caption("Download a full backup ZIP (data + config), or restore from a prior backup.")
+            import io, zipfile, os
 
+            def _safe_bytes(p):
+                try:
+                    return Path(p).read_bytes()
+                except Exception:
+                    return None
+
+            # Build backup zip
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                # core files
+                for fp in ["app.py", "requirements.txt", "cornerstone_logo.jpg"]:
+                    if os.path.exists(fp):
+                        z.write(fp, arcname=fp)
+
+                # data folder
+                if DATA_DIR.exists():
+                    for root, _, files in os.walk(DATA_DIR):
+                        for fn in files:
+                            full = os.path.join(root, fn)
+                            arc = os.path.relpath(full, start=os.getcwd())
+                            z.write(full, arcname=arc)
+
+            buf.seek(0)
+            st.download_button(
+                "Download full backup (ZIP)",
+                data=buf.getvalue(),
+                file_name="cornerstone_sales_app_backup.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
+
+            st.markdown("---")
+            st.markdown("### Restore")
+            st.caption("Upload a backup ZIP created here to restore the app's data/config.")
+
+            up_zip = st.file_uploader("Upload backup ZIP", type=["zip"], key="admin_restore_zip")
+            if st.button("Restore from ZIP", disabled=(up_zip is None), use_container_width=True, key="btn_restore_zip"):
+                if up_zip is None:
+                    st.warning("Upload a ZIP first.")
+                else:
+                    ok, msg = restore_app_backup_zip(up_zip.getvalue())
+                    if ok:
+                        st.cache_data.clear()
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+        elif tool == "Year Locks":
+            st.markdown("### Year locks")
+            st.caption("Lock closed years to prevent accidental overwrites during bulk uploads.")
+
+            locked = load_year_locks()
+            yrs = sorted(list(range(date.today().year - 5, date.today().year + 1)))
+            sel = st.multiselect("Locked years", options=yrs, default=sorted(list(locked)))
+            if st.button("Save year locks", use_container_width=True):
+                save_year_locks(set(int(y) for y in sel))
+                st.success("Saved.")
+                st.rerun()
+
+        elif tool == "Cache Tools":
+            st.markdown("### Cache tools")
+            st.caption("If something looks stale after a restore/upload, clear caches.")
+            if st.button("Clear cached data", use_container_width=True):
+                st.cache_data.clear()
+                st.success("Cache cleared. Rerunning…")
+                st.rerun()
 
 
 def render_tab_year_summary():
@@ -7481,6 +7489,8 @@ render_tab_forecasting()
 
 render_tab_alerts()
 
-render_tab_data_mgmt()
+render_tab_data_center()
+
+render_tab_admin()
 
 render_tab_year_summary()
