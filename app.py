@@ -400,7 +400,94 @@ def render_comparison_extras(ctx: dict):
                 out["Units_Diff"] = out["Units_Diff"].map(_fmt_pdf_int)
                 table_df = out[[by_dim, "Sales_A", "Sales_B", "Sales_Diff", "Units_A", "Units_B", "Units_Diff"]]
 
-            pdf_bytes = make_one_pager_pdf("Cornerstone Sales Dashboard — Comparison One‑Pager", subtitle, kpis, bullets, table_df)
+            
+            # -----------------------------
+            # Enhanced Comparison PDF (v2)
+            # -----------------------------
+            totals = {
+                "SalesA": sA, "SalesB": sB, "SalesDiff": ds, "SalesPct": ds_pct,
+                "UnitsA": uA, "UnitsB": uB, "UnitsDiff": du, "UnitsPct": du_pct,
+            }
+
+            # Retailer breakdown (ALL retailers)
+            retailer_tbl = pd.DataFrame()
+            try:
+                if "Retailer" in a.columns or "Retailer" in b.columns:
+                    ra = a.groupby("Retailer", as_index=False).agg(Units_A=("Units","sum"), Sales_A=("Sales","sum")) if (a is not None and not a.empty and "Retailer" in a.columns) else pd.DataFrame(columns=["Retailer","Units_A","Sales_A"])
+                    rb = b.groupby("Retailer", as_index=False).agg(Units_B=("Units","sum"), Sales_B=("Sales","sum")) if (b is not None and not b.empty and "Retailer" in b.columns) else pd.DataFrame(columns=["Retailer","Units_B","Sales_B"])
+                    retailer_tbl = ra.merge(rb, on="Retailer", how="outer").fillna(0.0)
+                    retailer_tbl["Sales_Diff"] = retailer_tbl["Sales_B"] - retailer_tbl["Sales_A"]
+                    retailer_tbl["Units_Diff"] = retailer_tbl["Units_B"] - retailer_tbl["Units_A"]
+                    retailer_tbl = retailer_tbl.sort_values("Sales_B", ascending=False)
+            except Exception:
+                retailer_tbl = pd.DataFrame()
+
+            # SKU movers (Sales delta)
+            sku_tbl = pd.DataFrame()
+            sku_up = pd.DataFrame()
+            sku_down = pd.DataFrame()
+            try:
+                if "SKU" in a.columns or "SKU" in b.columns:
+                    sa = a.groupby("SKU", as_index=False).agg(Units_A=("Units","sum"), Sales_A=("Sales","sum")) if (a is not None and not a.empty and "SKU" in a.columns) else pd.DataFrame(columns=["SKU","Units_A","Sales_A"])
+                    sb = b.groupby("SKU", as_index=False).agg(Units_B=("Units","sum"), Sales_B=("Sales","sum")) if (b is not None and not b.empty and "SKU" in b.columns) else pd.DataFrame(columns=["SKU","Units_B","Sales_B"])
+                    sku_tbl = sa.merge(sb, on="SKU", how="outer").fillna(0.0)
+                    sku_tbl["Sales_Diff"] = sku_tbl["Sales_B"] - sku_tbl["Sales_A"]
+                    sku_tbl["Units_Diff"] = sku_tbl["Units_B"] - sku_tbl["Units_A"]
+                    sku_up = sku_tbl.sort_values("Sales_Diff", ascending=False).head(10).copy()
+                    sku_down = sku_tbl.sort_values("Sales_Diff", ascending=True).head(10).copy()
+            except Exception:
+                sku_tbl = pd.DataFrame()
+                sku_up = pd.DataFrame()
+                sku_down = pd.DataFrame()
+
+            # Momentum (within period B, respecting filters)
+            momentum = pd.DataFrame()
+            try:
+                if b is not None and not b.empty and "SKU" in b.columns and "StartDate" in b.columns:
+                    bb = b.copy()
+                    bb["StartDate"] = pd.to_datetime(bb["StartDate"], errors="coerce")
+                    bb = bb[bb["StartDate"].notna()].copy()
+                    # Weekly sales per SKU in B
+                    g = bb.groupby(["SKU","StartDate"], as_index=False).agg(Sales=("Sales","sum"))
+                    rows = []
+                    for sku, grp in g.groupby("SKU", sort=False):
+                        grp2 = grp.sort_values("StartDate")
+                        vals = grp2["Sales"].tolist()
+                        streak = _consecutive_positive_wow(vals)
+                        last4 = sum(vals[-4:]) if len(vals) >= 1 else 0.0
+                        prev4 = sum(vals[-8:-4]) if len(vals) >= 8 else sum(vals[:-4]) if len(vals) > 4 else 0.0
+                        rows.append({"SKU": sku, "Streak": int(streak), "Last4Diff": float(last4 - prev4)})
+                    momentum = pd.DataFrame(rows)
+                    momentum = momentum.sort_values(["Streak","Last4Diff"], ascending=[False, False])
+            except Exception:
+                momentum = pd.DataFrame()
+
+            # Top 5 drivers = biggest absolute Sales changes by SKU, plus momentum hint
+            drivers = pd.DataFrame()
+            try:
+                if sku_tbl is not None and not sku_tbl.empty:
+                    drivers = sku_tbl.copy()
+                    drivers["_abs"] = drivers["Sales_Diff"].abs()
+                    drivers = drivers.sort_values("_abs", ascending=False).drop(columns=["_abs"]).head(5)
+                    if momentum is not None and not momentum.empty:
+                        drivers = drivers.merge(momentum[["SKU","Streak","Last4Diff"]], on="SKU", how="left")
+                        drivers["Momentum"] = drivers.apply(lambda r: f"{int(r['Streak'])}↑, {fmt_currency_signed(r['Last4Diff'])}" if pd.notna(r.get("Streak")) else "", axis=1)
+                    else:
+                        drivers["Momentum"] = ""
+            except Exception:
+                drivers = pd.DataFrame()
+
+            # Build PDF bytes
+            pdf_bytes = make_comparison_pdf_v2(
+                "Cornerstone Sales Dashboard — Comparison Report",
+                subtitle,
+                totals,
+                retailer_tbl,
+                sku_up[["SKU","Sales_Diff","Units_Diff"]] if (sku_up is not None and not sku_up.empty) else pd.DataFrame(),
+                sku_down[["SKU","Sales_Diff","Units_Diff"]] if (sku_down is not None and not sku_down.empty) else pd.DataFrame(),
+                drivers[["SKU","Sales_Diff","Units_Diff","Momentum"]] if (drivers is not None and not drivers.empty) else pd.DataFrame(),
+                momentum,
+            )
             st.session_state.cmp_onepager_pdf_bytes = pdf_bytes
             st.session_state.cmp_onepager_pdf_name = f"Comparison_{re.sub(r'[^A-Za-z0-9_\-]+','_',label_a)}_vs_{re.sub(r'[^A-Za-z0-9_\-]+','_',label_b)}.pdf"
             st.success("Comparison one‑pager is ready below.")
@@ -498,6 +585,293 @@ def make_one_pager_pdf(title: str, subtitle: str, kpis: list, bullets: list[str]
     c.showPage()
     c.save()
     return buf.getvalue()
+
+
+
+def make_comparison_pdf_v2(title: str, subtitle: str,
+                           totals: dict,
+                           retailer_tbl: pd.DataFrame,
+                           sku_up: pd.DataFrame,
+                           sku_down: pd.DataFrame,
+                           drivers: pd.DataFrame,
+                           momentum: pd.DataFrame) -> bytes:
+    """
+    Two-page comparison PDF that respects current filters.
+    totals keys expected:
+      SalesA, SalesB, SalesDiff, SalesPct
+      UnitsA, UnitsB, UnitsDiff, UnitsPct
+    """
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.units import inch
+        from reportlab.lib import colors
+    except Exception:
+        return b""
+
+    def _money(v):
+        try:
+            v = float(v)
+        except Exception:
+            return str(v)
+        s = f"${abs(v):,.2f}"
+        return f"-{s}" if v < 0 else s
+
+    def _int(v):
+        try:
+            v = float(v)
+        except Exception:
+            return str(v)
+        return f"{int(round(v)):,.0f}"
+
+    def _pct(v):
+        try:
+            if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
+                return ""
+            return f"{float(v)*100:+.1f}%"
+        except Exception:
+            return ""
+
+    def _delta_color(v):
+        try:
+            v = float(v)
+        except Exception:
+            return colors.black
+        if v > 0:
+            return colors.HexColor("#1a7f37")
+        if v < 0:
+            return colors.HexColor("#c62828")
+        return colors.black
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=letter)
+    w, h = letter
+    x0 = 0.75 * inch
+
+    # ---------------------------
+    # Page 1: header + totals + drivers
+    # ---------------------------
+    y = h - 0.75 * inch
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(x0, y, title)
+    y -= 0.26 * inch
+    c.setFont("Helvetica", 10)
+    c.setFillColor(colors.HexColor("#333333"))
+    c.drawString(x0, y, subtitle[:160])
+    c.setFillColor(colors.black)
+    y -= 0.35 * inch
+
+    # Big totals boxes (Sales, Units)
+    box_w = (w - 1.5*inch) / 2.0
+    box_h = 1.05 * inch
+
+    def _tot_box(ix, label, a_val, b_val, d_val, p_val):
+        bx = x0 + ix * box_w
+        by = y
+        c.setStrokeColor(colors.lightgrey)
+        c.setLineWidth(1)
+        c.rect(bx, by - box_h, box_w-10, box_h, stroke=1, fill=0)
+
+        c.setFont("Helvetica-Bold", 11)
+        c.setFillColor(colors.black)
+        c.drawString(bx+10, by-18, label)
+
+        c.setFont("Helvetica", 9)
+        c.setFillColor(colors.HexColor("#555555"))
+        c.drawString(bx+10, by-34, f"A: {a_val}")
+        c.drawString(bx+10, by-48, f"B: {b_val}")
+
+        c.setFont("Helvetica-Bold", 14)
+        c.setFillColor(_delta_color(d_val))
+        c.drawString(bx+10, by-74, f"{_money(d_val) if label=='Sales' else _int(d_val)}")
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(bx+10, by-90, f"{_pct(p_val)}")
+        c.setFillColor(colors.black)
+
+    _tot_box(0, "Sales",
+             _money(totals.get("SalesA", 0)),
+             _money(totals.get("SalesB", 0)),
+             totals.get("SalesDiff", 0),
+             totals.get("SalesPct", None))
+
+    _tot_box(1, "Units",
+             _int(totals.get("UnitsA", 0)),
+             _int(totals.get("UnitsB", 0)),
+             totals.get("UnitsDiff", 0),
+             totals.get("UnitsPct", None))
+
+    y -= box_h + 0.25*inch
+
+    # Key insights (short)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(x0, y, "Key insights")
+    y -= 0.20*inch
+    c.setFont("Helvetica", 9)
+    sales_line = f"Total sales: {_money(totals.get('SalesA',0))} → {_money(totals.get('SalesB',0))} ({_money(totals.get('SalesDiff',0))})."
+    units_line = f"Total units: {_int(totals.get('UnitsA',0))} → {_int(totals.get('UnitsB',0))} ({_int(totals.get('UnitsDiff',0))})."
+    for line in [sales_line, units_line]:
+        c.drawString(x0+10, y, f"• {line}"[:125])
+        y -= 0.16*inch
+
+    y -= 0.10*inch
+
+    # Top 5 drivers table (SKU)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(x0, y, "Top drivers (by Sales change)")
+    y -= 0.18*inch
+
+    c.setFont("Helvetica-Bold", 8)
+    col_x = [x0, x0+2.3*inch, x0+3.7*inch, x0+5.1*inch]
+    headers = ["SKU", "Sales Δ", "Units Δ", "Momentum"]
+    for hx, htxt in zip(col_x, headers):
+        c.drawString(hx, y, htxt)
+    y -= 0.14*inch
+
+    c.setFont("Helvetica", 8)
+    ddf = drivers.head(5).copy() if drivers is not None else pd.DataFrame()
+    if ddf is None or ddf.empty:
+        c.drawString(x0, y, "—")
+        y -= 0.14*inch
+    else:
+        for _, r in ddf.iterrows():
+            if y < 1.0*inch:
+                break
+            sku = str(r.get("SKU",""))[:22]
+            sd = float(r.get("Sales_Diff",0) or 0)
+            ud = float(r.get("Units_Diff",0) or 0)
+            mom = r.get("Momentum","")
+            c.setFillColor(colors.black)
+            c.drawString(col_x[0], y, sku)
+            c.setFillColor(_delta_color(sd))
+            c.drawRightString(col_x[1]+1.25*inch, y, _money(sd))
+            c.setFillColor(_delta_color(ud))
+            c.drawRightString(col_x[2]+1.00*inch, y, _int(ud))
+            c.setFillColor(colors.HexColor("#333333"))
+            c.drawString(col_x[3], y, str(mom)[:28])
+            y -= 0.14*inch
+        c.setFillColor(colors.black)
+
+    c.showPage()
+
+    # ---------------------------
+    # Page 2: retailer table + sku movers + momentum
+    # ---------------------------
+    y = h - 0.75 * inch
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(x0, y, "Retailers (A vs B)")
+    y -= 0.22*inch
+
+    # Retailer table (all rows)
+    rt = retailer_tbl.copy() if retailer_tbl is not None else pd.DataFrame()
+    if rt is None or rt.empty:
+        c.setFont("Helvetica", 9)
+        c.drawString(x0, y, "—")
+        y -= 0.2*inch
+    else:
+        # columns: Retailer, Sales_A, Sales_B, Sales_Diff, Units_A, Units_B, Units_Diff
+        c.setFont("Helvetica-Bold", 8)
+        colw = [2.0*inch, 1.0*inch, 1.0*inch, 1.0*inch, 0.8*inch, 0.8*inch, 0.8*inch]
+        cols = ["Retailer","Sales_A","Sales_B","Sales_Diff","Units_A","Units_B","Units_Diff"]
+        cx = [x0]
+        for w_ in colw[:-1]:
+            cx.append(cx[-1]+w_)
+        for j, cn in enumerate(cols):
+            c.drawString(cx[j], y, cn.replace("_"," "))
+        y -= 0.14*inch
+        c.setFont("Helvetica", 8)
+        # format cells
+        for _, r in rt.iterrows():
+            if y < 4.6*inch:
+                break
+            c.setFillColor(colors.black)
+            c.drawString(cx[0], y, str(r.get("Retailer",""))[:26])
+            # sales
+            sd = float(r.get("Sales_Diff",0) or 0)
+            c.drawRightString(cx[1]+0.95*inch, y, _money(r.get("Sales_A",0)))
+            c.drawRightString(cx[2]+0.95*inch, y, _money(r.get("Sales_B",0)))
+            c.setFillColor(_delta_color(sd))
+            c.drawRightString(cx[3]+0.95*inch, y, _money(sd))
+            # units
+            ud = float(r.get("Units_Diff",0) or 0)
+            c.setFillColor(colors.black)
+            c.drawRightString(cx[4]+0.75*inch, y, _int(r.get("Units_A",0)))
+            c.drawRightString(cx[5]+0.75*inch, y, _int(r.get("Units_B",0)))
+            c.setFillColor(_delta_color(ud))
+            c.drawRightString(cx[6]+0.75*inch, y, _int(ud))
+            y -= 0.13*inch
+        c.setFillColor(colors.black)
+
+    # SKU movers (increase/decrease)
+    y -= 0.20*inch
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(x0, y, "Top SKU movers (Sales Δ)")
+    y -= 0.18*inch
+
+    def _sku_table(title_txt, df_):
+        nonlocal y
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(x0, y, title_txt)
+        y -= 0.14*inch
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(x0, y, "SKU")
+        c.drawString(x0+1.4*inch, y, "Sales Δ")
+        c.drawString(x0+2.7*inch, y, "Units Δ")
+        y -= 0.12*inch
+        c.setFont("Helvetica", 8)
+        for _, r in (df_.head(10) if df_ is not None else pd.DataFrame()).iterrows():
+            if y < 1.0*inch:
+                break
+            sku = str(r.get("SKU",""))[:18]
+            sd = float(r.get("Sales_Diff",0) or 0)
+            ud = float(r.get("Units_Diff",0) or 0)
+            c.setFillColor(colors.black)
+            c.drawString(x0, y, sku)
+            c.setFillColor(_delta_color(sd))
+            c.drawRightString(x0+2.35*inch, y, _money(sd))
+            c.setFillColor(_delta_color(ud))
+            c.drawRightString(x0+3.15*inch, y, _int(ud))
+            y -= 0.12*inch
+        c.setFillColor(colors.black)
+        y -= 0.10*inch
+
+    # Place two columns for up/down if space permits
+    # We'll do sequential tables; keeps layout predictable.
+    _sku_table("Largest increases", sku_up)
+    _sku_table("Largest decreases", sku_down)
+
+    # Momentum table
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(x0, y, "SKU momentum (in period B)")
+    y -= 0.18*inch
+    c.setFont("Helvetica-Bold", 8)
+    c.drawString(x0, y, "SKU")
+    c.drawString(x0+1.4*inch, y, "Consecutive ↑ weeks")
+    c.drawString(x0+3.1*inch, y, "Last4 - Prev4 (Sales)")
+    y -= 0.12*inch
+    c.setFont("Helvetica", 8)
+    if momentum is None or momentum.empty:
+        c.drawString(x0, y, "—")
+        y -= 0.12*inch
+    else:
+        for _, r in momentum.head(10).iterrows():
+            if y < 0.9*inch:
+                break
+            sku = str(r.get("SKU",""))[:18]
+            streak = r.get("Streak", "")
+            d4 = float(r.get("Last4Diff",0) or 0)
+            c.setFillColor(colors.black)
+            c.drawString(x0, y, sku)
+            c.drawRightString(x0+2.95*inch, y, str(streak))
+            c.setFillColor(_delta_color(d4))
+            c.drawRightString(x0+5.7*inch, y, _money(d4))
+            y -= 0.12*inch
+        c.setFillColor(colors.black)
+
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
 MONTH_NAME_TO_NUM = {
     "January": 1, "February": 2, "March": 3, "April": 4,
     "May": 5, "June": 6, "July": 7, "August": 8,
