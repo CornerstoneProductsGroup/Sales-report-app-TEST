@@ -73,6 +73,185 @@ def style_numeric_posneg(df: pd.DataFrame, cols: list[str]):
 from datetime import datetime
 
 
+def make_comparison_pdf_bytes(
+    title: str,
+    subtitle: str,
+    kpi: dict,
+    retailers: pd.DataFrame,
+    drivers: pd.DataFrame,
+    top_increase: pd.DataFrame,
+    top_decrease: pd.DataFrame,
+    momentum: pd.DataFrame,
+    logo_path: str | None = None,
+) -> bytes:
+    """Executive-style comparison PDF.
+
+    Styled to match the Executive Summary (Weekly Summary) PDF tables/boxes.
+    """
+    try:
+        from io import BytesIO
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.units import inch
+        from reportlab.lib import colors
+        from reportlab.platypus import (
+            SimpleDocTemplate,
+            Paragraph,
+            Spacer,
+            Table,
+            TableStyle,
+            Image,
+            KeepTogether,
+            KeepInFrame,
+            PageBreak,
+        )
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        import re as _re
+        import os as _os
+    except Exception:
+        return b""
+
+    styles = getSampleStyleSheet()
+    if "H1" not in styles:
+        styles.add(ParagraphStyle(name="H1", parent=styles["Heading1"], fontSize=16, leading=18, spaceAfter=8))
+    if "H2" not in styles:
+        styles.add(ParagraphStyle(name="H2", parent=styles["Heading2"], fontSize=12, leading=14, spaceAfter=6))
+    if "Body" not in styles:
+        styles.add(ParagraphStyle(name="Body", parent=styles["Normal"], fontSize=9.5, leading=12))
+
+    def _num(v):
+        try:
+            if v is None:
+                return None
+            s2 = _re.sub(r"[^0-9\-\.]", "", str(v))
+            if s2 in ("", "-", ".", "-."):
+                return None
+            return float(s2)
+        except Exception:
+            return None
+
+    def _delta_color(v):
+        x = _num(v)
+        if x is None:
+            return colors.HexColor("#111827")
+        if x > 0:
+            return colors.HexColor("#1a7f37")
+        if x < 0:
+            return colors.HexColor("#c62828")
+        return colors.HexColor("#111827")
+
+    def _make_table(df: pd.DataFrame, wow_col_name: str | None = None):
+        if df is None or getattr(df, "empty", True):
+            return Paragraph("No data.", styles["Body"])
+        disp = df.copy()
+        # format numerics
+        for c in disp.columns:
+            cn = str(c)
+            cn_l = cn.lower()
+            num = pd.to_numeric(disp[c], errors="coerce")
+            if not num.notna().any():
+                disp[c] = disp[c].astype(str)
+                continue
+            is_delta = ("Δ" in cn) or ("delta" in cn_l) or ("diff" in cn_l) or ("change" in cn_l)
+            if "sales" in cn_l:
+                disp[c] = num.apply(lambda x: (f"+${x:,.2f}" if x > 0 else f"${x:,.2f}") if is_delta else f"${x:,.2f}")
+            elif "unit" in cn_l or "qty" in cn_l:
+                disp[c] = num.apply(lambda x: (f"+{int(round(x)):,}" if x > 0 else f"{int(round(x)):,}") if is_delta else f"{int(round(x)):,}")
+            else:
+                disp[c] = num.apply(lambda x: f"{x:,.2f}")
+
+        data = [list(disp.columns)] + disp.astype(str).values.tolist()
+        tbl = Table(data)
+        ts = [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 9),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e5e7eb")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f9fafb")]),
+            ("FONTSIZE", (0, 1), (-1, -1), 8.5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]
+        # align right for numeric-ish columns
+        for j, cn in enumerate(disp.columns):
+            cn_l = str(cn).lower()
+            if any(k in cn_l for k in ["sales", "unit", "Δ", "delta", "diff", "%", "momentum"]):
+                ts.append(("ALIGN", (j, 0), (j, -1), "RIGHT"))
+
+        if wow_col_name and wow_col_name in disp.columns:
+            j = list(disp.columns).index(wow_col_name)
+            for i in range(1, len(data)):
+                ts.append(("TEXTCOLOR", (j, i), (j, i), _delta_color(df.iloc[i-1][wow_col_name])))
+                ts.append(("FONTNAME", (j, i), (j, i), "Helvetica-Bold"))
+
+        tbl.setStyle(TableStyle(ts))
+        return tbl
+
+    def _on_page(c, d):
+        c.saveState()
+        c.setFont("Helvetica", 8)
+        c.setFillColor(colors.HexColor("#6b7280"))
+        c.drawRightString(letter[0] - 0.75 * inch, 0.55 * inch, f"Page {d.page}")
+        c.restoreState()
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=0.75 * inch, rightMargin=0.75 * inch, topMargin=0.75 * inch, bottomMargin=0.75 * inch)
+    story = []
+
+    # Header row
+    header_cells = []
+    if logo_path and _os.path.exists(logo_path):
+        try:
+            header_cells.append(Image(logo_path, width=1.55 * inch, height=0.55 * inch))
+        except Exception:
+            header_cells.append(Paragraph("", styles["Body"]))
+    header_cells.append(Paragraph(f"<b>{html.escape(title)}</b><br/><font size=9 color='#6b7280'>{html.escape(subtitle)}</font>", styles["Body"]))
+    hdr = Table([header_cells], colWidths=[1.75 * inch, doc.width - 1.75 * inch])
+    hdr.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
+    story.append(hdr)
+    story.append(Spacer(1, 0.12 * inch))
+
+    # KPI hero boxes
+    sales = (kpi or {}).get("Sales", {})
+    units = (kpi or {}).get("Units", {})
+    hero = Table(
+        [[
+            Paragraph(f"<font size=9 color='#6b7280'>Sales</font><br/><font size=16><b>{html.escape(str(sales.get('A','—')))}</b></font><br/><font color='{_delta_color(sales.get('Δ','')).hexval()}'><b>{html.escape(str(sales.get('Δ','')))}</b></font>", styles["Body"]),
+            Paragraph(f"<font size=9 color='#6b7280'>Units</font><br/><font size=16><b>{html.escape(str(units.get('A','—')))}</b></font><br/><font color='{_delta_color(units.get('Δ','')).hexval()}'><b>{html.escape(str(units.get('Δ','')))}</b></font>", styles["Body"]),
+        ]],
+        colWidths=[doc.width / 2.0, doc.width / 2.0],
+    )
+    hero.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f3f4f6")), ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#d1d5db")), ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e5e7eb")), ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10), ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
+    story.append(hero)
+    story.append(Spacer(1, 0.18 * inch))
+
+    story.append(Paragraph("Retailers (All)", styles["H2"]))
+    story.append(_make_table(retailers, wow_col_name="Sales Δ" if retailers is not None and "Sales Δ" in retailers.columns else None))
+    story.append(PageBreak())
+
+    story.append(Paragraph("Operational Movement", styles["H1"]))
+    if drivers is not None and not getattr(drivers, "empty", True):
+        story.append(KeepTogether([Paragraph("Top 5 Drivers (Largest |Sales Δ|)", styles["H2"]), _make_table(drivers, wow_col_name="Sales Δ")]))
+        story.append(Spacer(1, 0.14 * inch))
+    story.append(KeepTogether([Paragraph("Top Increase SKUs", styles["H2"]), _make_table(top_increase, wow_col_name="Sales Δ")]))
+    story.append(Spacer(1, 0.14 * inch))
+    story.append(KeepTogether([Paragraph("Top Decrease SKUs", styles["H2"]), _make_table(top_decrease, wow_col_name="Sales Δ")]))
+    story.append(PageBreak())
+
+    story.append(Paragraph("Strategic Momentum", styles["H1"]))
+    story.append(Paragraph("Momentum Leaders (Period A: Last4 − Prev4)", styles["H2"]))
+    story.append(Spacer(1, 0.06 * inch))
+    story.append(KeepInFrame(doc.width, 8.5 * inch, [_make_table(momentum, wow_col_name="Momentum")], mode="shrink"))
+
+    try:
+        doc.build(story, onFirstPage=_on_page, onLaterPages=_on_page)
+        return buf.getvalue()
+    except Exception:
+        return b""
+
+
 def _consecutive_positive_wow(values):
     """Count consecutive week-over-week increases ending at the most recent week.
     values must be ordered chronologically (oldest -> newest).
