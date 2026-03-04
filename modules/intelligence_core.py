@@ -796,12 +796,16 @@ def run_app():
         lvl1 = drivers(dfA, dfB, "Retailer")
         lvl1 = lvl1.sort_values("Sales_Δ", ascending=False)
         st.markdown("**Level 1 — Retailers**")
-        render_df(lvl1[["Retailer","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].assign(
-            Sales_A=lvl1["Sales_A"].map(money),
-            Sales_B=lvl1["Sales_B"].map(money),
-            Sales_Δ=lvl1["Sales_Δ"].map(money),
-            Contribution_%=lvl1["Contribution_%"].map(pct_fmt),
-        ), height=260)
+        render_df(
+            lvl1[["Retailer","Sales_A","Sales_B","Sales_Δ","Contribution_%"]]
+            .assign(
+                Sales_A=lvl1["Sales_A"].map(money),
+                Sales_B=lvl1["Sales_B"].map(money),
+                Sales_Δ=lvl1["Sales_Δ"].map(money),
+            )
+            .assign(**{"Contribution_%": lvl1["Contribution_%"].map(pct_fmt)}),
+            height=260,
+        )
 
         pick_r = st.selectbox("Drill into Retailer", options=["(none)"] + lvl1["Retailer"].tolist(), index=0)
         if pick_r != "(none)":
@@ -809,12 +813,16 @@ def run_app():
             dfB_r = dfB[dfB["Retailer"]==pick_r]
             lvl2 = drivers(dfA_r, dfB_r, "Vendor").sort_values("Sales_Δ", ascending=False)
             st.markdown(f"**Level 2 — Vendors inside {pick_r}**")
-            render_df(lvl2[["Vendor","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].assign(
-                Sales_A=lvl2["Sales_A"].map(money),
-                Sales_B=lvl2["Sales_B"].map(money),
-                Sales_Δ=lvl2["Sales_Δ"].map(money),
-                Contribution_%=lvl2["Contribution_%"].map(pct_fmt),
-            ), height=260)
+            render_df(
+                lvl2[["Vendor","Sales_A","Sales_B","Sales_Δ","Contribution_%"]]
+                .assign(
+                    Sales_A=lvl2["Sales_A"].map(money),
+                    Sales_B=lvl2["Sales_B"].map(money),
+                    Sales_Δ=lvl2["Sales_Δ"].map(money),
+                )
+                .assign(**{"Contribution_%": lvl2["Contribution_%"].map(pct_fmt)}),
+                height=260,
+            )
 
             pick_v = st.selectbox("Drill into Vendor", options=["(none)"] + lvl2["Vendor"].tolist(), index=0)
             if pick_v != "(none)":
@@ -822,12 +830,16 @@ def run_app():
                 dfB_v = dfB_r[dfB_r["Vendor"]==pick_v]
                 lvl3 = drivers(dfA_v, dfB_v, "SKU").sort_values("Sales_Δ", ascending=False).head(30)
                 st.markdown(f"**Level 3 — SKUs inside {pick_r} → {pick_v}**")
-                render_df(lvl3[["SKU","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].assign(
-                    Sales_A=lvl3["Sales_A"].map(money),
-                    Sales_B=lvl3["Sales_B"].map(money),
-                    Sales_Δ=lvl3["Sales_Δ"].map(money),
-                    Contribution_%=lvl3["Contribution_%"].map(pct_fmt),
-                ), height=360)
+                render_df(
+                    lvl3[["SKU","Sales_A","Sales_B","Sales_Δ","Contribution_%"]]
+                    .assign(
+                        Sales_A=lvl3["Sales_A"].map(money),
+                        Sales_B=lvl3["Sales_B"].map(money),
+                        Sales_Δ=lvl3["Sales_Δ"].map(money),
+                    )
+                    .assign(**{"Contribution_%": lvl3["Contribution_%"].map(pct_fmt)}),
+                    height=360,
+                )
 
     st.divider()
 
