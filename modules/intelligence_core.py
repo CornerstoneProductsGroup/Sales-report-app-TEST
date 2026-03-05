@@ -581,6 +581,33 @@ def run_app():
             color: var(--text-color);
             opacity: 0.80;
         }
+        .intel-card{
+            border:1px solid rgba(128,128,128,0.22);
+            border-radius:16px;
+            padding:14px 16px;
+            background: var(--secondary-background-color);
+            margin-bottom:14px;
+        }
+        .intel-header{
+            font-size:12px;
+            font-weight:800;
+            letter-spacing:0.06em;
+            color: var(--text-color);
+            opacity:0.70;
+        }
+        .intel-body{
+            margin-top:8px;
+            color: var(--text-color);
+            font-size:15px;
+            line-height:1.45;
+        }
+        .intel-body ul{
+            margin: 0;
+            padding-left: 18px;
+        }
+        .intel-body li{
+            margin: 6px 0;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -704,12 +731,33 @@ def run_app():
     else:
         headline_bits.append("Choose a comparison mode to see drivers and deltas.")
 
+        # Render as a theme-aware card with readable text in light/dark mode
+    _items = [b for b in headline_bits if str(b).strip()]
+    def _md_bold_to_html(s: str) -> str:
+        import re as _re, html as _html
+        parts = []
+        last = 0
+        for mm in _re.finditer(r"\*\*(.+?)\*\*", s):
+            parts.append(_html.escape(s[last:mm.start()]))
+            parts.append(f"<strong>{_html.escape(mm.group(1))}</strong>")
+            last = mm.end()
+        parts.append(_html.escape(s[last:]))
+        return "".join(parts)
+
+    if not _items:
+        _items = ["Choose a comparison mode to see drivers and deltas."]
+
+    _lis = "".join([f"<li>{_md_bold_to_html(x)}</li>" for x in _items])
+
     st.markdown(
         f"""
-        <div style="border:1px solid rgba(0,0,0,0.08); background:linear-gradient(180deg, rgba(255,255,255,1), rgba(250,250,250,1));
-                    border-radius:16px; padding:16px 18px; margin-bottom:14px;">
-            <div style="font-size:13px; color:rgba(0,0,0,0.55); font-weight:700; letter-spacing:0.02em;">INTELLIGENCE SUMMARY</div>
-            <div style="font-size:16px; margin-top:6px; line-height:1.4;">{" ".join(headline_bits)}</div>
+        <div class="intel-card">
+            <div class="intel-header">INTELLIGENCE SUMMARY</div>
+            <div class="intel-body">
+                <ul>
+                    {_lis}
+                </ul>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
