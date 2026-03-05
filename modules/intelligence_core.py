@@ -182,6 +182,55 @@ def filter_by_period(df: pd.DataFrame, p: Period) -> pd.DataFrame:
     w = pd.to_datetime(df["WeekEnd"], errors="coerce")
     return df[(w >= p.start) & (w <= p.end)].copy()
 
+
+def timeframe_short_label(timeframe: str) -> str:
+    """Compact label used in column headings."""
+    if timeframe.startswith("Last "):
+        m = re.findall(r"\d+", timeframe)
+        if m:
+            return f"{m[0]}W"
+    if timeframe.startswith("Week"):
+        return "Wk"
+    if timeframe == "YTD":
+        return "YTD"
+    return timeframe
+
+def ab_labels(timeframe: str, compare_mode: str, pA: Period, pB: Optional[Period]) -> Tuple[str, Optional[str]]:
+    """Human-friendly labels for A/B periods."""
+    tf = timeframe_short_label(timeframe)
+    a = f"Current {tf}"
+    if compare_mode == "None" or pB is None:
+        return a, None
+    if compare_mode.startswith("Prior"):
+        b = f"Prior {tf}"
+    else:
+        b = f"YoY {tf}"
+    return a, b
+
+def rename_ab_columns(df: pd.DataFrame, a_label: str, b_label: Optional[str]) -> pd.DataFrame:
+    """Rename Sales_A/B and Units_A/B columns to readable headings."""
+    rename = {}
+    if "Sales_A" in df.columns:
+        rename["Sales_A"] = f"Sales ({a_label})"
+    if "Units_A" in df.columns:
+        rename["Units_A"] = f"Units ({a_label})"
+    if b_label:
+        if "Sales_B" in df.columns:
+            rename["Sales_B"] = f"Sales ({b_label})"
+        if "Units_B" in df.columns:
+            rename["Units_B"] = f"Units ({b_label})"
+    else:
+        # if B exists but no label, keep generic
+        if "Sales_B" in df.columns:
+            rename["Sales_B"] = "Sales (Comparison)"
+        if "Units_B" in df.columns:
+            rename["Units_B"] = "Units (Comparison)"
+    out = df.rename(columns=rename).copy()
+    return out
+
+def format_period_range(p: Period) -> str:
+    return f"{p.start.date().isoformat()} → {p.end.date().isoformat()}"
+
 # -----------------------------
 # KPI + analytics engines
 # -----------------------------
@@ -712,7 +761,17 @@ def run_app():
         pB = period_yoy(pA)
         dfB = filter_by_period(df_scope, pB)
 
-    # KPI compute
+    
+    # Show period definitions in the sidebar for clarity
+    a_lbl, b_lbl = ab_labels(timeframe, compare_mode, pA, pB)
+    st.sidebar.markdown("### Period Definition")
+    st.sidebar.markdown(f"**Current:** {a_lbl}<br><span style='opacity:0.8'>{format_period_range(pA)}</span>", unsafe_allow_html=True)
+    if compare_mode != "None" and pB is not None:
+        st.sidebar.markdown(f"**Compare:** {b_lbl}<br><span style='opacity:0.8'>{format_period_range(pB)}</span>", unsafe_allow_html=True)
+    else:
+        st.sidebar.markdown("<span style='opacity:0.75'>Compare: None</span>", unsafe_allow_html=True)
+    st.sidebar.divider()
+# KPI compute
     kA = calc_kpis(dfA)
     kB = calc_kpis(dfB) if pB is not None else {k:0.0 for k in kA.keys()}
 
@@ -729,15 +788,31 @@ def run_app():
     placements = new_placement(df_hist_for_new, pA)
 
     # Layout
+    a_lbl, b_lbl = ab_labels(timeframe, compare_mode, pA, pB)
+    cur_range = format_period_range(pA)
+    cmp_range = format_period_range(pB) if pB is not None else ""
+    cmp_name = b_lbl or ""
+
     st.markdown(
-        f"<div style='color:rgba(0,0,0,0.55); font-weight:600;'>Period: {pA.start.date()} → {pA.end.date()}"
-        + (f" &nbsp;&nbsp;|&nbsp;&nbsp; Compare: {pB.start.date()} → {pB.end.date()}" if pB is not None else "")
-        + "</div>",
+        f"""
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin: 4px 0 10px 0;">
+            <span style="padding:6px 10px; border-radius:999px; border:1px solid rgba(128,128,128,0.22); background: var(--secondary-background-color); color: var(--text-color); font-weight:700; font-size:12px;">
+                Scope: {scope}
+            </span>
+            <span style="padding:6px 10px; border-radius:999px; border:1px solid rgba(128,128,128,0.22); background: var(--secondary-background-color); color: var(--text-color); font-weight:700; font-size:12px;">
+                Current: {a_lbl} • {cur_range}
+            </span>
+            {(
+                f'<span style="padding:6px 10px; border-radius:999px; border:1px solid rgba(128,128,128,0.22); background: var(--secondary-background-color); color: var(--text-color); font-weight:700; font-size:12px;">Compare: {cmp_name} • {cmp_range}</span>'
+                if compare_mode != "None" and pB is not None else
+                '<span style="padding:6px 10px; border-radius:999px; border:1px solid rgba(128,128,128,0.22); background: var(--secondary-background-color); color: var(--text-color); font-weight:700; font-size:12px; opacity:0.75;">Compare: None</span>'
+            )}
+        </div>
+        """,
         unsafe_allow_html=True,
     )
     st.write("")
-
-    # 0) Intelligence summary
+# 0) Intelligence summary
     sales_delta = kA["Sales"] - kB.get("Sales", 0.0)
     units_delta = kA["Units"] - kB.get("Units", 0.0)
     aspA = kA["ASP"]
@@ -864,13 +939,20 @@ def run_app():
             d["Contribution_%"] = d["Contribution_%"].map(pct_fmt)
 
         left,right = st.columns(2)
+
+        # Rename A/B columns for clearer display
+        a_lbl, b_lbl = ab_labels(timeframe, compare_mode, pA, pB)
+        pos_disp = rename_ab_columns(pos, a_lbl, b_lbl)
+        neg_disp = rename_ab_columns(neg, a_lbl, b_lbl)
+        sales_a_col = f"Sales ({a_lbl})"
+        sales_b_col = f"Sales ({b_lbl})" if b_lbl else "Sales (Comparison)"
+
         with left:
             st.markdown("**Top Positive Contributors**")
-            render_df(pos[[driver_level,"Sales_A","Sales_B","Sales_Δ","Contribution_%"]], height=320)
+            render_df(pos_disp[[driver_level, sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=320)
         with right:
             st.markdown("**Top Negative Contributors**")
-            render_df(neg[[driver_level,"Sales_A","Sales_B","Sales_Δ","Contribution_%"]], height=320)
-
+            render_df(neg_disp[[driver_level, sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=320)
     st.divider()
 
     # 3) Movers + Momentum
@@ -1046,61 +1128,56 @@ def run_app():
     st.header("Strategic Intelligence")
 
     # A) Contribution Tree
+    
+    # A) Contribution Tree
     st.subheader("1) Contribution Tree (Where did change come from?)")
     if compare_mode == "None":
         st.info("Select a comparison mode to use the contribution tree.")
     else:
-        lvl1 = drivers(dfA, dfB, "Retailer")
-        lvl1 = lvl1.sort_values("Sales_Δ", ascending=False)
+        a_lbl, b_lbl = ab_labels(timeframe, compare_mode, pA, pB)
+        sales_a_col = f"Sales ({a_lbl})"
+        sales_b_col = f"Sales ({b_lbl})" if b_lbl else "Sales (Comparison)"
+
+        # Level 1: Retailers
+        lvl1 = drivers(dfA, dfB, "Retailer").sort_values("Sales_Δ", ascending=False)
         st.markdown("**Level 1 — Retailers**")
-        render_df(
-            lvl1[["Retailer","Sales_A","Sales_B","Sales_Δ","Contribution_%"]]
-            .assign(
-                Sales_A=lvl1["Sales_A"].map(money),
-                Sales_B=lvl1["Sales_B"].map(money),
-                Sales_Δ=lvl1["Sales_Δ"].map(money),
-            )
-            .assign(**{"Contribution_%": lvl1["Contribution_%"].map(pct_fmt)}),
-            height=260,
-        )
+        lvl1_disp = lvl1[["Retailer","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
+        lvl1_disp["Sales_A"] = lvl1_disp["Sales_A"].map(money)
+        lvl1_disp["Sales_B"] = lvl1_disp["Sales_B"].map(money)
+        lvl1_disp["Sales_Δ"] = lvl1_disp["Sales_Δ"].map(money)
+        lvl1_disp["Contribution_%"] = lvl1_disp["Contribution_%"].map(pct_fmt)
+        lvl1_disp = rename_ab_columns(lvl1_disp, a_lbl, b_lbl)
+        render_df(lvl1_disp[["Retailer", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=260)
 
         pick_r = st.selectbox("Drill into Retailer", options=["(none)"] + lvl1["Retailer"].tolist(), index=0)
         if pick_r != "(none)":
-            dfA_r = dfA[dfA["Retailer"]==pick_r]
-            dfB_r = dfB[dfB["Retailer"]==pick_r]
+            dfA_r = dfA[dfA["Retailer"] == pick_r].copy()
+            dfB_r = dfB[dfB["Retailer"] == pick_r].copy()
+
             lvl2 = drivers(dfA_r, dfB_r, "Vendor").sort_values("Sales_Δ", ascending=False)
             st.markdown(f"**Level 2 — Vendors inside {pick_r}**")
-            render_df(
-                lvl2[["Vendor","Sales_A","Sales_B","Sales_Δ","Contribution_%"]]
-                .assign(
-                    Sales_A=lvl2["Sales_A"].map(money),
-                    Sales_B=lvl2["Sales_B"].map(money),
-                    Sales_Δ=lvl2["Sales_Δ"].map(money),
-                )
-                .assign(**{"Contribution_%": lvl2["Contribution_%"].map(pct_fmt)}),
-                height=260,
-            )
+            lvl2_disp = lvl2[["Vendor","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
+            lvl2_disp["Sales_A"] = lvl2_disp["Sales_A"].map(money)
+            lvl2_disp["Sales_B"] = lvl2_disp["Sales_B"].map(money)
+            lvl2_disp["Sales_Δ"] = lvl2_disp["Sales_Δ"].map(money)
+            lvl2_disp["Contribution_%"] = lvl2_disp["Contribution_%"].map(pct_fmt)
+            lvl2_disp = rename_ab_columns(lvl2_disp, a_lbl, b_lbl)
+            render_df(lvl2_disp[["Vendor", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
 
             pick_v = st.selectbox("Drill into Vendor", options=["(none)"] + lvl2["Vendor"].tolist(), index=0)
             if pick_v != "(none)":
-                dfA_v = dfA_r[dfA_r["Vendor"]==pick_v]
-                dfB_v = dfB_r[dfB_r["Vendor"]==pick_v]
-                lvl3 = drivers(dfA_v, dfB_v, "SKU").sort_values("Sales_Δ", ascending=False).head(30)
+                dfA_v = dfA_r[dfA_r["Vendor"] == pick_v].copy()
+                dfB_v = dfB_r[dfB_r["Vendor"] == pick_v].copy()
+
+                lvl3 = drivers(dfA_v, dfB_v, "SKU").sort_values("Sales_Δ", ascending=False)
                 st.markdown(f"**Level 3 — SKUs inside {pick_r} → {pick_v}**")
-                render_df(
-                    lvl3[["SKU","Sales_A","Sales_B","Sales_Δ","Contribution_%"]]
-                    .assign(
-                        Sales_A=lvl3["Sales_A"].map(money),
-                        Sales_B=lvl3["Sales_B"].map(money),
-                        Sales_Δ=lvl3["Sales_Δ"].map(money),
-                    )
-                    .assign(**{"Contribution_%": lvl3["Contribution_%"].map(pct_fmt)}),
-                    height=360,
-                )
-
-    st.divider()
-
-    # B) SKU Lifecycle
+                lvl3_disp = lvl3[["SKU","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
+                lvl3_disp["Sales_A"] = lvl3_disp["Sales_A"].map(money)
+                lvl3_disp["Sales_B"] = lvl3_disp["Sales_B"].map(money)
+                lvl3_disp["Sales_Δ"] = lvl3_disp["Sales_Δ"].map(money)
+                lvl3_disp["Contribution_%"] = lvl3_disp["Contribution_%"].map(pct_fmt)
+                lvl3_disp = rename_ab_columns(lvl3_disp, a_lbl, b_lbl)
+                render_df(lvl3_disp[["SKU", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
     st.subheader("2) SKU Lifecycle (Launch → Growth → Mature → Decline → Dormant)")
     life_df_src = df_hist_for_new if show_full_history_lifecycle else df_scope
     life = lifecycle_table(life_df_src, pA, lookback_weeks=8)
