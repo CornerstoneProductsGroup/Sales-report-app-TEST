@@ -392,11 +392,19 @@ def lifecycle_table(df_all: pd.DataFrame, p: Period, lookback_weeks: int = 8) ->
         gw = g[(g["WeekEnd"] >= lb_start) & (g["WeekEnd"] <= anchor)].copy()
         mom = momentum_score(gw["Sales"]) if not gw.empty else 0.0
         sales_lb = float(gw["Sales"].sum()) if not gw.empty else 0.0
+        units_lb = float(gw["Units"].sum()) if (not gw.empty and "Units" in gw.columns) else 0.0
 
         fw = first_week.get(sku, pd.NaT)
         lw = last_week.get(sku, pd.NaT)
 
         stage = "Mature"
+        trend = "Flat"
+        slope = 0.0
+        weeks_up = 0
+        weeks_down = 0
+        last_w_sales = float(gw["Sales"].iloc[-1]) if len(gw) >= 1 else 0.0
+        prev_w_sales = float(gw["Sales"].iloc[-2]) if len(gw) >= 2 else 0.0
+        wow_sales = last_w_sales - prev_w_sales if len(gw) >= 2 else np.nan
         # Launch: first sale ever in current period
         if pd.notna(fw) and (fw >= p.start) and (fw <= p.end):
             stage = "Launch"
@@ -408,6 +416,7 @@ def lifecycle_table(df_all: pd.DataFrame, p: Period, lookback_weeks: int = 8) ->
                 # Growth/Decline based on trend classification in lookback
                 if not gw.empty:
                     trend, slope, wu, wd = classify_trend(gw["Sales"], min_weeks=min(lookback_weeks, len(gw)))
+                    weeks_up, weeks_down = int(wu), int(wd)
                     if trend == "Increasing":
                         stage = "Growth"
                     elif trend == "Declining":
@@ -415,7 +424,21 @@ def lifecycle_table(df_all: pd.DataFrame, p: Period, lookback_weeks: int = 8) ->
                     else:
                         stage = "Mature"
 
-        out.append({"SKU": sku, "Stage": stage, "Momentum": mom, "Sales (lookback)": sales_lb})
+        out.append({
+            "SKU": sku,
+            "Stage": stage,
+            "Trend": trend,
+            "Momentum": mom,
+            "Sales (lookback)": sales_lb,
+            "Units (lookback)": units_lb,
+            "First Sale": fw,
+            "Last Sale": lw,
+            "Slope": float(slope),
+            "Weeks Up": int(weeks_up),
+            "Weeks Down": int(weeks_down),
+            "Last Week Sales": float(last_w_sales),
+            "WoW Sales Δ": float(wow_sales) if not pd.isna(wow_sales) else np.nan,
+        })
     out_df = pd.DataFrame(out)
     if not out_df.empty:
         out_df = out_df.sort_values(["Stage","Momentum","Sales (lookback)"], ascending=[True, False, False])
@@ -529,6 +552,10 @@ def pct_fmt(x: float) -> str:
 
 
 def kpi_card(label: str, value: str, delta: Optional[str] = None):
+    """Theme-safe KPI card.
+
+    delta supports basic HTML (we generate sign-colored spans).
+    """
     delta_html = f'<div class="kpi-delta">{delta}</div>' if delta else ""
     st.markdown(
         f'''
@@ -581,6 +608,9 @@ def run_app():
             color: var(--text-color);
             opacity: 0.80;
         }
+        .kpi-delta .delta-abs{ font-weight:800; }
+        .kpi-delta .delta-pct{ font-weight:700; opacity:0.88; margin-left:6px; }
+        .kpi-delta .delta-note{ opacity:0.75; margin-left:6px; }
         .intel-card{
             border:1px solid rgba(128,128,128,0.22);
             border-radius:16px;
@@ -765,18 +795,49 @@ def run_app():
 
     # 1) KPI row
     c1,c2,c3,c4,c5,c6 = st.columns(6)
-    def kdelta(key):
+    def _delta_html(cur: float, prev: float, is_money: bool, note: str = "vs comp") -> str:
         if compare_mode == "None":
             return ""
-        cur = kA[key]
-        prev = kB.get(key, 0.0)
-        if key in ["Sales"]:
-            return f"{pct_fmt(pct_change(cur, prev))} vs comp"
-        if key in ["Units", "Active SKUs", "Active Retailers", "Active Vendors"]:
-            return f"{pct_fmt(pct_change(cur, prev))} vs comp"
-        if key == "ASP":
-            return f"{pct_fmt(pct_change(cur, prev))} vs comp"
-        return ""
+        d = cur - prev
+        pc = pct_change(cur, prev)
+        # Works in both themes
+        green = "#2e7d32"
+        red = "#c62828"
+        color = green if d > 0 else (red if d < 0 else "var(--text-color)")
+        if is_money:
+            abs_s = money(d)
+        else:
+            abs_s = f"{d:,.0f}" if abs(d) >= 1 else f"{d:,.2f}"
+            if d > 0:
+                abs_s = "+" + abs_s
+        if is_money and d > 0:
+            abs_s = "+" + abs_s
+        pct_s = pct_fmt(pc)
+        return (
+            f"<span class='delta-abs' style='color:{color}'>{abs_s}</span>"
+            f"<span class='delta-pct' style='color:{color}'>({pct_s})</span>"
+            f"<span class='delta-note'>{note}</span>"
+        )
+
+    def kdelta(key: str) -> str:
+        if compare_mode == "None":
+            return ""
+        cur = float(kA.get(key, 0.0))
+        prev = float(kB.get(key, 0.0))
+        if key == "Sales":
+            return _delta_html(cur, prev, is_money=True)
+        if key == "Units":
+            return _delta_html(cur, prev, is_money=False)
+        # Keep percent-only for these (still colored)
+        d = cur - prev
+        green = "#2e7d32"
+        red = "#c62828"
+        color = green if d > 0 else (red if d < 0 else "var(--text-color)")
+        return (
+            f"<span class='delta-abs' style='color:{color}'>{pct_fmt(pct_change(cur, prev))}</span>"
+            f"<span class='delta-note'>vs comp</span>"
+        )
+
     with c1: kpi_card("Total Sales", money(kA["Sales"]), kdelta("Sales"))
     with c2: kpi_card("Total Units", f"{kA['Units']:,.0f}", kdelta("Units"))
     with c3: kpi_card("Avg Selling Price", money(kA["ASP"]), kdelta("ASP"))
@@ -818,20 +879,27 @@ def run_app():
     mom = build_momentum(df_scope[df_scope["WeekEnd"] <= pA.end], "SKU", lookback_weeks=8)
     if not mom.empty:
         mom = mom[(mom["Sales (lookback)"] >= min_sales) | (mom["Units (lookback)"] >= min_units)].copy()
+        mom_show = mom.copy()
+        # Pretty formatting for display
+        mom_show["Sales (lookback)"] = mom_show["Sales (lookback)"].map(money)
         top_inc = mom[mom["Trend"]=="Increasing"].head(10)
         top_dec = mom[mom["Trend"]=="Declining"].head(10)
         top_mom = mom.head(10)
 
+        top_inc_show = mom_show.loc[top_inc.index, ["SKU","Momentum","Momentum Label","Sales (lookback)"]]
+        top_dec_show = mom_show.loc[top_dec.index, ["SKU","Momentum","Momentum Label","Sales (lookback)"]]
+        top_mom_show = mom_show.loc[top_mom.index, ["SKU","Momentum","Momentum Label","Sales (lookback)"]]
+
         a,b,c = st.columns(3)
         with a:
             st.markdown("**Top Increasing (trend)**")
-            render_df(top_inc[["SKU","Momentum","Momentum Label","Sales (lookback)"]], height=320)
+            render_df(top_inc_show, height=320)
         with b:
             st.markdown("**Top Declining (trend)**")
-            render_df(top_dec[["SKU","Momentum","Momentum Label","Sales (lookback)"]], height=320)
+            render_df(top_dec_show, height=320)
         with c:
             st.markdown("**Top Momentum**")
-            render_df(top_mom[["SKU","Momentum","Momentum Label","Sales (lookback)"]], height=320)
+            render_df(top_mom_show, height=320)
     else:
         st.info("Not enough history yet to compute momentum.")
 
@@ -857,16 +925,118 @@ def run_app():
             pl["FirstWeek"] = pl["FirstWeek"].dt.date.astype(str)
             render_df(pl.rename(columns={"FirstWeek":"First Week"})[["SKU","Retailer","Vendor","First Week"]], height=260)
 
+    # New item tracker
+    st.markdown("**New Item Tracker (track launches + placements over the next N weeks)**")
+    track_weeks = st.slider("Tracking window (weeks)", min_value=4, max_value=13, value=8, step=1)
+
+    def _track_rows() -> pd.DataFrame:
+        rows = []
+        horizon_end_days = 7 * track_weeks - 1
+        # Launches
+        if not first_ever.empty:
+            for _, r in first_ever.iterrows():
+                sku = r["SKU"]
+                fw = pd.to_datetime(r["FirstWeek"], errors="coerce")
+                if pd.isna(fw):
+                    continue
+                end = fw + pd.Timedelta(days=horizon_end_days)
+                d = df_hist_for_new[(df_hist_for_new["SKU"]==sku) & (df_hist_for_new["WeekEnd"]>=fw) & (df_hist_for_new["WeekEnd"]<=end)].copy()
+                if d.empty:
+                    continue
+                wk = d.groupby("WeekEnd", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum")).sort_values("WeekEnd")
+                total_sales = float(wk["Sales"].sum())
+                total_units = float(wk["Units"].sum())
+                last_sales = float(wk["Sales"].iloc[-1])
+                prev_sales = float(wk["Sales"].iloc[-2]) if len(wk)>=2 else 0.0
+                rows.append({
+                    "Type": "Launch",
+                    "SKU": sku,
+                    "Start Week": fw.date().isoformat(),
+                    "Weeks Tracked": int(len(wk)),
+                    "Total Sales": total_sales,
+                    "Total Units": total_units,
+                    "Last Week Sales": last_sales,
+                    "WoW Sales Δ": (last_sales - prev_sales) if len(wk)>=2 else np.nan,
+                })
+        # Placements (track within placement retailer)
+        if not placements.empty:
+            for _, r in placements.iterrows():
+                sku = r["SKU"]
+                ret = r["Retailer"]
+                fw = pd.to_datetime(r["FirstWeek"], errors="coerce")
+                if pd.isna(fw):
+                    continue
+                end = fw + pd.Timedelta(days=horizon_end_days)
+                d = df_hist_for_new[(df_hist_for_new["SKU"]==sku) & (df_hist_for_new["Retailer"]==ret) & (df_hist_for_new["WeekEnd"]>=fw) & (df_hist_for_new["WeekEnd"]<=end)].copy()
+                if d.empty:
+                    continue
+                wk = d.groupby("WeekEnd", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum")).sort_values("WeekEnd")
+                total_sales = float(wk["Sales"].sum())
+                total_units = float(wk["Units"].sum())
+                last_sales = float(wk["Sales"].iloc[-1])
+                prev_sales = float(wk["Sales"].iloc[-2]) if len(wk)>=2 else 0.0
+                rows.append({
+                    "Type": "Placement",
+                    "SKU": sku,
+                    "Retailer": ret,
+                    "Start Week": fw.date().isoformat(),
+                    "Weeks Tracked": int(len(wk)),
+                    "Total Sales": total_sales,
+                    "Total Units": total_units,
+                    "Last Week Sales": last_sales,
+                    "WoW Sales Δ": (last_sales - prev_sales) if len(wk)>=2 else np.nan,
+                })
+        if not rows:
+            return pd.DataFrame(columns=["Type","SKU","Retailer","Start Week","Weeks Tracked","Total Sales","Total Units","Last Week Sales","WoW Sales Δ"])
+        return pd.DataFrame(rows)
+
+    tracker = _track_rows()
+    if tracker.empty:
+        st.caption("No new items to track in the selected period.")
+    else:
+        show = tracker.copy()
+        for c in ["Total Sales","Last Week Sales","WoW Sales Δ"]:
+            show[c] = show[c].map(lambda v: "" if pd.isna(v) else money(float(v)))
+        show["Total Units"] = show["Total Units"].map(lambda v: f"{float(v):,.0f}")
+        render_df(show.sort_values(["Type","Start Week","SKU"], ascending=[True, False, True]), height=320)
+
     st.divider()
 
-    # 5) Weekly detail table
-    st.subheader("Weekly Detail (Authoritative)")
-    detail = dfA.copy()
-    detail = detail[(detail["Sales"] >= min_sales) | (detail["Units"] >= min_units)].copy()
-    show_cols = ["WeekEnd","Retailer","Vendor","SKU","Units","Price","Sales","SourceFile"]
-    detail = detail[show_cols].sort_values(["WeekEnd","Retailer","Vendor","SKU"])
-    detail["WeekEnd"] = detail["WeekEnd"].dt.date.astype(str)
-    render_df(detail, height=460)
+    # 5) Weekly detail (pivoted by Retailer)
+    st.subheader("Weekly Detail (Retailers x Weeks)")
+    d = dfA.copy()
+    d = d[(d["Sales"] >= min_sales) | (d["Units"] >= min_units)].copy()
+    if d.empty:
+        st.caption("No rows match the current thresholds.")
+    else:
+        wk_sales = d.groupby(["Retailer","WeekEnd"], as_index=False).agg(Sales=("Sales","sum"))
+        wk_sales["WeekEnd"] = pd.to_datetime(wk_sales["WeekEnd"], errors="coerce")
+        # Use the actual weeks in the selected period, sorted
+        weeks = sorted([pd.to_datetime(x) for x in wk_sales["WeekEnd"].dropna().unique().tolist()])
+        # Friendly week labels
+        wk_sales["Week"] = wk_sales["WeekEnd"].dt.date.astype(str)
+        piv = wk_sales.pivot_table(index="Retailer", columns="Week", values="Sales", aggfunc="sum", fill_value=0.0)
+        piv = piv.reindex(sorted(piv.index.tolist()))
+
+        # Difference column (last two weeks in view)
+        week_cols = [c for c in piv.columns.tolist()]
+        week_cols_sorted = sorted(week_cols)
+        piv = piv[week_cols_sorted]
+        if len(week_cols_sorted) >= 2:
+            last_w = week_cols_sorted[-1]
+            prev_w = week_cols_sorted[-2]
+            piv["Δ vs prior week"] = piv[last_w] - piv[prev_w]
+        else:
+            piv["Δ vs prior week"] = np.nan
+
+        # Format for display
+        show = piv.reset_index().copy()
+        for c in show.columns:
+            if c == "Retailer":
+                continue
+            show[c] = show[c].map(lambda v: "" if pd.isna(v) else money(float(v)))
+
+        render_df(show, height=460)
 
     st.divider()
 
@@ -945,10 +1115,28 @@ def run_app():
             st.markdown("**Stage Summary**")
             render_df(stage_counts, height=220)
         with right:
-            st.markdown("**Top SKUs by stage (sorted by momentum)**")
+            st.markdown("**Lifecycle Detail (trend + momentum + recent change)**")
             life_show = life.copy()
-            life_show = life_show[life_show["Sales (lookback)"] >= min_sales].copy() if min_sales > 0 else life_show
-            render_df(life_show.head(40), height=420)
+            if min_sales > 0:
+                life_show = life_show[life_show["Sales (lookback)"] >= min_sales].copy()
+
+            # Pretty formatting
+            life_show["Sales (lookback)"] = life_show["Sales (lookback)"].map(money)
+            life_show["Units (lookback)"] = life_show["Units (lookback)"].map(lambda v: f"{v:,.0f}")
+            life_show["Last Week Sales"] = life_show["Last Week Sales"].map(money)
+            life_show["WoW Sales Δ"] = life_show["WoW Sales Δ"].map(lambda v: "" if pd.isna(v) else money(v))
+            for dc in ["First Sale","Last Sale"]:
+                if dc in life_show.columns:
+                    life_show[dc] = pd.to_datetime(life_show[dc], errors="coerce").dt.date.astype(str)
+
+            cols = [
+                "SKU","Stage","Trend","Momentum",
+                "Sales (lookback)","Units (lookback)",
+                "Last Week Sales","WoW Sales Δ",
+                "Weeks Up","Weeks Down","First Sale","Last Sale",
+            ]
+            cols = [c for c in cols if c in life_show.columns]
+            render_df(life_show[cols].head(60), height=520)
 
     st.divider()
 
