@@ -271,7 +271,8 @@ def drivers(df_a: pd.DataFrame, df_b: pd.DataFrame, level: str) -> pd.DataFrame:
     m["Sales_Δ"] = m["Sales_A"] - m["Sales_B"]
     m["Units_Δ"] = m["Units_A"] - m["Units_B"]
     total = float(m["Sales_Δ"].sum())
-    m["Contribution_%"] = np.where(total != 0, m["Sales_Δ"] / total, 0.0)
+    denom = float(m["Sales_Δ"].abs().sum())
+    m["Contribution_%"] = np.where(denom != 0, (m["Sales_Δ"].abs() / denom), 0.0)
     m = m.sort_values("Sales_Δ", ascending=False)
     return m
 
@@ -376,18 +377,30 @@ def first_sale_ever(df_all: pd.DataFrame, p: Period) -> pd.DataFrame:
     d = df_all[df_all["Sales"] > 0].copy()
     if d.empty:
         return d
-    first = d.groupby("SKU", as_index=False).agg(FirstWeek=("WeekEnd","min"), FirstRetailer=("Retailer","first"), FirstVendor=("Vendor","first"))
-    in_period = first[(first["FirstWeek"] >= p.start) & (first["FirstWeek"] <= p.end)].copy()
+    # Ensure we pull Retailer/Vendor from the actual first-sale row (not arbitrary group order)
+    d = d.sort_values(["SKU", "WeekEnd"])
+    first_week = d.groupby("SKU", as_index=False).agg(FirstWeek=("WeekEnd", "min"))
+    first_rows = d.merge(first_week, on=["SKU"], how="inner")
+    first_rows = first_rows[first_rows["WeekEnd"] == first_rows["FirstWeek"]].copy()
+    # If multiple retailers on same first week, just take the first row after sorting
+    first_rows = first_rows.groupby("SKU", as_index=False).first()
+    first_rows = first_rows.rename(columns={"Retailer": "FirstRetailer", "Vendor": "FirstVendor"})
+    in_period = first_rows[(first_rows["FirstWeek"] >= p.start) & (first_rows["FirstWeek"] <= p.end)].copy()
     return in_period.sort_values("FirstWeek")
 
 def new_placement(df_all: pd.DataFrame, p: Period) -> pd.DataFrame:
     d = df_all[df_all["Sales"] > 0].copy()
     if d.empty:
         return d
-    fr = d.groupby(["SKU","Retailer"], as_index=False).agg(FirstWeek=("WeekEnd","min"), Vendor=("Vendor","first"))
-    in_period = fr[(fr["FirstWeek"] >= p.start) & (fr["FirstWeek"] <= p.end)].copy()
+    d = d.sort_values(["SKU", "Retailer", "WeekEnd"])
+    first_week = d.groupby(["SKU", "Retailer"], as_index=False).agg(FirstWeek=("WeekEnd", "min"))
+    first_rows = d.merge(first_week, on=["SKU", "Retailer"], how="inner")
+    first_rows = first_rows[first_rows["WeekEnd"] == first_rows["FirstWeek"]].copy()
+    first_rows = first_rows.groupby(["SKU", "Retailer"], as_index=False).first()
+    first_rows = first_rows.rename(columns={"Vendor": "Vendor"})
+    in_period = first_rows[(first_rows["FirstWeek"] >= p.start) & (first_rows["FirstWeek"] <= p.end)].copy()
     # Exclude those that are also first sale ever
-    first_sku = d.groupby("SKU", as_index=False).agg(SKUFirst=("WeekEnd","min"))
+    first_sku = d.groupby("SKU", as_index=False).agg(SKUFirst=("WeekEnd", "min"))
     in_period = in_period.merge(first_sku, on="SKU", how="left")
     in_period = in_period[in_period["SKUFirst"] < in_period["FirstWeek"]]
     return in_period.sort_values("FirstWeek")
@@ -812,6 +825,54 @@ def run_app():
         unsafe_allow_html=True,
     )
     st.write("")
+
+    # KPI add-ons: Top entities (current) + biggest increases
+    if compare_mode != "None":
+        def _top_by_current(level: str):
+            a = dfA.groupby(level, as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum"))
+            b = dfB.groupby(level, as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum"))
+            m = a.merge(b, on=level, how="outer", suffixes=("_A","_B")).fillna(0.0)
+            if m.empty:
+                return None
+            m = m.sort_values("Sales_A", ascending=False)
+            row = m.iloc[0]
+            return str(row[level]), float(row["Sales_A"]), float(row["Sales_B"])
+
+        def _top_by_increase(level: str):
+            a = dfA.groupby(level, as_index=False).agg(Sales=("Sales","sum"))
+            b = dfB.groupby(level, as_index=False).agg(Sales=("Sales","sum"))
+            m = a.merge(b, on=level, how="outer", suffixes=("_A","_B")).fillna(0.0)
+            if m.empty:
+                return None
+            m["Δ"] = m["Sales_A"] - m["Sales_B"]
+            m = m.sort_values("Δ", ascending=False)
+            row = m.iloc[0]
+            return str(row[level]), float(row["Sales_A"]), float(row["Sales_B"])
+
+        st.markdown("### Leaders")
+        r1c1, r1c2, r1c3 = st.columns(3)
+        tR = _top_by_current("Retailer")
+        tV = _top_by_current("Vendor")
+        tS = _top_by_current("SKU")
+        with r1c1:
+            if tR: kpi_card("Top Retailer (Sales)", tR[0], _delta_html(tR[1], tR[2], is_money=True, note=""))
+        with r1c2:
+            if tV: kpi_card("Top Vendor (Sales)", tV[0], _delta_html(tV[1], tV[2], is_money=True, note=""))
+        with r1c3:
+            if tS: kpi_card("Top SKU (Sales)", tS[0], _delta_html(tS[1], tS[2], is_money=True, note=""))
+
+        st.markdown("### Biggest Increases")
+        r2c1, r2c2, r2c3 = st.columns(3)
+        iR = _top_by_increase("Retailer")
+        iV = _top_by_increase("Vendor")
+        iS = _top_by_increase("SKU")
+        with r2c1:
+            if iR: kpi_card("Retailer w/ Biggest Increase", iR[0], _delta_html(iR[1], iR[2], is_money=True, note=""))
+        with r2c2:
+            if iV: kpi_card("Vendor w/ Biggest Increase", iV[0], _delta_html(iV[1], iV[2], is_money=True, note=""))
+        with r2c3:
+            if iS: kpi_card("SKU w/ Biggest Increase", iS[0], _delta_html(iS[1], iS[2], is_money=True, note=""))
+
 # 0) Intelligence summary
     sales_delta = kA["Sales"] - kB.get("Sales", 0.0)
     units_delta = kA["Units"] - kB.get("Units", 0.0)
@@ -899,11 +960,11 @@ def run_app():
             return ""
         cur = float(kA.get(key, 0.0))
         prev = float(kB.get(key, 0.0))
-        if key == "Sales":
+        if key in ("Sales", "ASP"):
             return _delta_html(cur, prev, is_money=True)
-        if key == "Units":
+        if key in ("Units", "Active SKUs"):
             return _delta_html(cur, prev, is_money=False)
-        # Keep percent-only for these (still colored)
+        # fallback percent-only
         d = cur - prev
         green = "#2e7d32"
         red = "#c62828"
@@ -912,6 +973,8 @@ def run_app():
             f"<span class='delta-abs' style='color:{color}'>{pct_fmt(pct_change(cur, prev))}</span>"
             f"<span class='delta-note'>vs comp</span>"
         )
+
+    
 
     with c1: kpi_card("Total Sales", money(kA["Sales"]), kdelta("Sales"))
     with c2: kpi_card("Total Units", f"{kA['Units']:,.0f}", kdelta("Units"))
@@ -956,38 +1019,6 @@ def run_app():
     st.divider()
 
     # 3) Movers + Momentum
-    st.subheader("Movers & Momentum")
-    # Momentum at SKU level (within scope)
-    mom = build_momentum(df_scope[df_scope["WeekEnd"] <= pA.end], "SKU", lookback_weeks=8)
-    if not mom.empty:
-        mom = mom[(mom["Sales (lookback)"] >= min_sales) | (mom["Units (lookback)"] >= min_units)].copy()
-        mom_show = mom.copy()
-        # Pretty formatting for display
-        mom_show["Sales (lookback)"] = mom_show["Sales (lookback)"].map(money)
-        top_inc = mom[mom["Trend"]=="Increasing"].head(10)
-        top_dec = mom[mom["Trend"]=="Declining"].head(10)
-        top_mom = mom.head(10)
-
-        top_inc_show = mom_show.loc[top_inc.index, ["SKU","Momentum","Momentum Label","Sales (lookback)"]]
-        top_dec_show = mom_show.loc[top_dec.index, ["SKU","Momentum","Momentum Label","Sales (lookback)"]]
-        top_mom_show = mom_show.loc[top_mom.index, ["SKU","Momentum","Momentum Label","Sales (lookback)"]]
-
-        a,b,c = st.columns(3)
-        with a:
-            st.markdown("**Top Increasing (trend)**")
-            render_df(top_inc_show, height=320)
-        with b:
-            st.markdown("**Top Declining (trend)**")
-            render_df(top_dec_show, height=320)
-        with c:
-            st.markdown("**Top Momentum**")
-            render_df(top_mom_show, height=320)
-    else:
-        st.info("Not enough history yet to compute momentum.")
-
-    st.divider()
-
-    # 4) Newness
     st.subheader("New Activity")
     a,b = st.columns(2)
     with a:
@@ -1085,46 +1116,129 @@ def run_app():
     st.divider()
 
     # 5) Weekly detail (pivoted by Retailer)
-    st.subheader("Weekly Detail (Retailers x Weeks)")
+    
+
+    st.subheader("Weekly Detail (Retailer/Vendor x Weeks)")
     d = dfA.copy()
     d = d[(d["Sales"] >= min_sales) | (d["Units"] >= min_units)].copy()
     if d.empty:
         st.caption("No rows match the current thresholds.")
     else:
-        wk_sales = d.groupby(["Retailer","WeekEnd"], as_index=False).agg(Sales=("Sales","sum"))
+        pivot_dim = st.selectbox("Pivot rows by", options=["Retailer","Vendor"], index=0, key="weekly_pivot_dim")
+        wk_sales = d.groupby([pivot_dim,"WeekEnd"], as_index=False).agg(Sales=("Sales","sum"))
         wk_sales["WeekEnd"] = pd.to_datetime(wk_sales["WeekEnd"], errors="coerce")
         # Use the actual weeks in the selected period, sorted
         weeks = sorted([pd.to_datetime(x) for x in wk_sales["WeekEnd"].dropna().unique().tolist()])
-        # Friendly week labels
         wk_sales["Week"] = wk_sales["WeekEnd"].dt.date.astype(str)
-        piv = wk_sales.pivot_table(index="Retailer", columns="Week", values="Sales", aggfunc="sum", fill_value=0.0)
+        piv = wk_sales.pivot_table(index=pivot_dim, columns="Week", values="Sales", aggfunc="sum", fill_value=0.0)
         piv = piv.reindex(sorted(piv.index.tolist()))
 
         # Difference column (last two weeks in view)
-        week_cols = [c for c in piv.columns.tolist()]
-        week_cols_sorted = sorted(week_cols)
-        piv = piv[week_cols_sorted]
-        if len(week_cols_sorted) >= 2:
-            last_w = week_cols_sorted[-1]
-            prev_w = week_cols_sorted[-2]
-            piv["Δ vs prior week"] = piv[last_w] - piv[prev_w]
+        if len(weeks) >= 2:
+            w_last = str(weeks[-1].date())
+            w_prev = str(weeks[-2].date())
+            piv["Δ vs prior week"] = piv.get(w_last, 0.0) - piv.get(w_prev, 0.0)
         else:
-            piv["Δ vs prior week"] = np.nan
+            piv["Δ vs prior week"] = 0.0
 
-        # Format for display
-        show = piv.reset_index().copy()
-        for c in show.columns:
-            if c == "Retailer":
-                continue
-            show[c] = show[c].map(lambda v: "" if pd.isna(v) else money(float(v)))
+        # Pretty currency formatting
+        piv_disp = piv.copy()
+        for c in piv_disp.columns:
+            if c == "Δ vs prior week":
+                piv_disp[c] = piv_disp[c].map(lambda x: f"<span style='color:{'#2e7d32' if x>0 else ('#c62828' if x<0 else 'var(--text-color)')}'>{money(x) if x<0 else money(x) if x==0 else '+'+money(x)}</span>")
+            else:
+                piv_disp[c] = piv_disp[c].map(money)
 
-        render_df(show, height=460)
+        # Render as HTML for color in delta column
+        st.markdown(piv_disp.to_html(escape=False), unsafe_allow_html=True)
+
+
+    st.subheader("Movers & Trend Leaders")
+
+    # Top Increasing / Declining (Avg weekly sales vs compare period)
+    if compare_mode == "None":
+        st.info("Select a comparison mode to compute increasing/declining vs the compare period.")
+    else:
+        # count weeks in each period (use unique WeekEnd dates)
+        nA = max(1, dfA["WeekEnd"].nunique())
+        nB = max(1, dfB["WeekEnd"].nunique())
+
+        a = dfA.groupby("SKU", as_index=False).agg(Sales_A=("Sales","sum"), Units_A=("Units","sum"))
+        b = dfB.groupby("SKU", as_index=False).agg(Sales_B=("Sales","sum"), Units_B=("Units","sum"))
+        m = a.merge(b, on="SKU", how="outer").fillna(0.0)
+
+        m["Sales (Current)"] = m["Sales_A"]
+        m["Avg Weekly Sales (Compare)"] = m["Sales_B"] / nB
+        m["Avg Weekly Sales (Current)"] = m["Sales_A"] / nA
+        m["Δ Avg Weekly Sales"] = m["Avg Weekly Sales (Current)"] - m["Avg Weekly Sales (Compare)"]
+        m["Δ %"] = np.where(m["Avg Weekly Sales (Compare)"] != 0, m["Δ Avg Weekly Sales"] / m["Avg Weekly Sales (Compare)"], np.nan)
+
+        # thresholds based on volume in either period
+        m = m[(m["Sales_A"] >= min_sales) | (m["Sales_B"] >= min_sales) | (m["Units_A"] >= min_units) | (m["Units_B"] >= min_units)].copy()
+
+        inc = m[m["Δ Avg Weekly Sales"] > 0].sort_values("Δ Avg Weekly Sales", ascending=False).head(10)
+        dec = m[m["Δ Avg Weekly Sales"] < 0].sort_values("Δ Avg Weekly Sales", ascending=True).head(10)
+
+        def _fmt_diff(val: float) -> str:
+            green = "#2e7d32"
+            red = "#c62828"
+            color = green if val > 0 else (red if val < 0 else "var(--text-color)")
+            s = money(val)
+            if val > 0:
+                s = "+" + s
+            return f"<span style='color:{color}'>{s}</span>"
+
+        def _fmt_pct(val: float) -> str:
+            if pd.isna(val) or val == np.inf or val == -np.inf:
+                return ""
+            green = "#2e7d32"
+            red = "#c62828"
+            color = green if val > 0 else (red if val < 0 else "var(--text-color)")
+            s = pct_fmt(val)
+            return f"<span style='color:{color}'>({s})</span>"
+
+        def _disp(df_in: pd.DataFrame) -> pd.DataFrame:
+            if df_in.empty:
+                return df_in
+            out = df_in[["SKU","Sales (Current)","Avg Weekly Sales (Compare)","Δ Avg Weekly Sales","Δ %"]].copy()
+            out["Sales (Current)"] = out["Sales (Current)"].map(money)
+            out["Avg Weekly Sales (Compare)"] = out["Avg Weekly Sales (Compare)"].map(money)
+            out["Δ Avg Weekly Sales"] = out["Δ Avg Weekly Sales"].map(_fmt_diff)
+            out["Δ %"] = out["Δ %"].map(_fmt_pct)
+            return out
+
+        inc_disp = _disp(inc)
+        dec_disp = _disp(dec)
+
+        # Trend leaders (slope-based)
+        mom = build_momentum(df_scope[df_scope["WeekEnd"] <= pA.end], "SKU", lookback_weeks=8)
+        if not mom.empty:
+            mom = mom[(mom["Sales (lookback)"] >= min_sales) | (mom["Units (lookback)"] >= min_units)].copy()
+            trend_leaders = mom.sort_values("Slope", ascending=False).head(10).copy()
+            trend_leaders_disp = trend_leaders[["SKU","Trend","Slope","Weeks Up","Weeks Down","Sales (lookback)"]].copy()
+            trend_leaders_disp["Sales (lookback)"] = trend_leaders_disp["Sales (lookback)"].map(money)
+            trend_leaders_disp["Slope"] = trend_leaders_disp["Slope"].map(lambda v: f"{v:,.2f}")
+        else:
+            trend_leaders_disp = pd.DataFrame(columns=["SKU","Trend","Slope","Weeks Up","Weeks Down","Sales (lookback)"])
+
+        a,b,c = st.columns(3)
+        with a:
+            st.markdown("**Top Increasing (Avg weekly sales vs compare)**")
+            if not inc_disp.empty:
+                st.markdown(inc_disp.to_html(escape=False, index=False), unsafe_allow_html=True)
+            else:
+                st.caption("None.")
+        with b:
+            st.markdown("**Top Declining (Avg weekly sales vs compare)**")
+            if not dec_disp.empty:
+                st.markdown(dec_disp.to_html(escape=False, index=False), unsafe_allow_html=True)
+            else:
+                st.caption("None.")
+        with c:
+            st.markdown("**Trend Leaders (slope over last 8 weeks)**")
+            render_df(trend_leaders_disp, height=320)
 
     st.divider()
-
-    # -------------------------
-    # Three advanced features
-    # -------------------------
     st.header("Strategic Intelligence")
 
     # A) Contribution Tree
@@ -1149,7 +1263,7 @@ def run_app():
         lvl1_disp = rename_ab_columns(lvl1_disp, a_lbl, b_lbl)
         render_df(lvl1_disp[["Retailer", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=260)
 
-        pick_r = st.selectbox("Drill into Retailer", options=["(none)"] + lvl1["Retailer"].tolist(), index=0)
+        pick_r = st.selectbox("Drill into Retailer", options=["(none)"] + sorted(lvl1["Retailer"].astype(str).tolist()), index=0)
         if pick_r != "(none)":
             dfA_r = dfA[dfA["Retailer"] == pick_r].copy()
             dfB_r = dfB[dfB["Retailer"] == pick_r].copy()
@@ -1164,7 +1278,7 @@ def run_app():
             lvl2_disp = rename_ab_columns(lvl2_disp, a_lbl, b_lbl)
             render_df(lvl2_disp[["Vendor", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
 
-            pick_v = st.selectbox("Drill into Vendor", options=["(none)"] + lvl2["Vendor"].tolist(), index=0)
+            pick_v = st.selectbox("Drill into Vendor", options=["(none)"] + sorted(lvl2["Vendor"].astype(str).tolist()), index=0)
             if pick_v != "(none)":
                 dfA_v = dfA_r[dfA_r["Vendor"] == pick_v].copy()
                 dfB_v = dfB_r[dfB_r["Vendor"] == pick_v].copy()
@@ -1202,6 +1316,7 @@ def run_app():
             life_show["Units (lookback)"] = life_show["Units (lookback)"].map(lambda v: f"{v:,.0f}")
             life_show["Last Week Sales"] = life_show["Last Week Sales"].map(money)
             life_show["WoW Sales Δ"] = life_show["WoW Sales Δ"].map(lambda v: "" if pd.isna(v) else money(v))
+            life_show["Slope"] = life_show["Slope"].map(lambda v: f"{v:,.2f}") if "Slope" in life_show.columns else life_show.get("Slope")
             for dc in ["First Sale","Last Sale"]:
                 if dc in life_show.columns:
                     life_show[dc] = pd.to_datetime(life_show[dc], errors="coerce").dt.date.astype(str)
@@ -1210,7 +1325,7 @@ def run_app():
                 "SKU","Stage","Trend","Momentum",
                 "Sales (lookback)","Units (lookback)",
                 "Last Week Sales","WoW Sales Δ",
-                "Weeks Up","Weeks Down","First Sale","Last Sale",
+                "Slope","Weeks Up","Weeks Down","First Sale","Last Sale",
             ]
             cols = [c for c in cols if c in life_show.columns]
             render_df(life_show[cols].head(60), height=520)
