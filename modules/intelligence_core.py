@@ -849,6 +849,31 @@ def run_app():
             row = m.iloc[0]
             return str(row[level]), float(row["Sales_A"]), float(row["Sales_B"])
 
+        # helpers for KPI deltas / leader cards
+        def _delta_html(cur: float, prev: float, is_money: bool, note: str = "") -> str:
+            if compare_mode == "None":
+                return ""
+            d = cur - prev
+            pc = pct_change(cur, prev)
+            green = "#2e7d32"
+            red = "#c62828"
+            color = green if d > 0 else (red if d < 0 else "var(--text-color)")
+            if is_money:
+                abs_s = money(d)
+                if d > 0:
+                    abs_s = "+" + abs_s
+            else:
+                abs_s = f"{d:,.0f}" if abs(d) >= 1 else f"{d:,.2f}"
+                if d > 0:
+                    abs_s = "+" + abs_s
+            pct_s = pct_fmt(pc)
+            note_html = f"<span class='delta-note'>{note}</span>" if note else ""
+            return (
+                f"<span class='delta-abs' style='color:{color}'>{abs_s}</span>"
+                f"<span class='delta-pct' style='color:{color}'>({pct_s})</span>"
+                f"{note_html}"
+            )
+
         st.markdown("### Leaders")
         r1c1, r1c2, r1c3 = st.columns(3)
         tR = _top_by_current("Retailer")
@@ -931,30 +956,6 @@ def run_app():
 
     # 1) KPI row
     c1,c2,c3,c4,c5,c6 = st.columns(6)
-    def _delta_html(cur: float, prev: float, is_money: bool, note: str = "vs comp") -> str:
-        if compare_mode == "None":
-            return ""
-        d = cur - prev
-        pc = pct_change(cur, prev)
-        # Works in both themes
-        green = "#2e7d32"
-        red = "#c62828"
-        color = green if d > 0 else (red if d < 0 else "var(--text-color)")
-        if is_money:
-            abs_s = money(d)
-        else:
-            abs_s = f"{d:,.0f}" if abs(d) >= 1 else f"{d:,.2f}"
-            if d > 0:
-                abs_s = "+" + abs_s
-        if is_money and d > 0:
-            abs_s = "+" + abs_s
-        pct_s = pct_fmt(pc)
-        return (
-            f"<span class='delta-abs' style='color:{color}'>{abs_s}</span>"
-            f"<span class='delta-pct' style='color:{color}'>({pct_s})</span>"
-            f"<span class='delta-note'>{note}</span>"
-        )
-
     def kdelta(key: str) -> str:
         if compare_mode == "None":
             return ""
