@@ -527,15 +527,17 @@ def pct_fmt(x: float) -> str:
         return "-∞"
     return f"{x*100:,.1f}%"
 
+
 def kpi_card(label: str, value: str, delta: Optional[str] = None):
+    delta_html = f'<div class="kpi-delta">{delta}</div>' if delta else ""
     st.markdown(
-        f"""
-        <div style="border:1px solid rgba(0,0,0,0.08); border-radius:14px; padding:14px 14px; background:white;">
-            <div style="font-size:12px; color:rgba(0,0,0,0.55); font-weight:600; letter-spacing:0.02em;">{label}</div>
-            <div style="font-size:28px; font-weight:800; margin-top:6px;">{value}</div>
-            <div style="font-size:12px; color:rgba(0,0,0,0.55); margin-top:2px;">{delta or ""}</div>
+        f'''
+        <div class="kpi-card">
+            <div class="kpi-title">{label}</div>
+            <div class="kpi-value">{value}</div>
+            {delta_html}
         </div>
-        """,
+        ''',
         unsafe_allow_html=True,
     )
 
@@ -547,6 +549,42 @@ def render_df(df: pd.DataFrame, height: int = 320):
 # -----------------------------
 def run_app():
     st.set_page_config(page_title=APP_TITLE, layout="wide")
+
+
+    # Theme-aware global styles
+    st.markdown(
+        """
+        <style>
+        /* Streamlit theme variables: --text-color, --background-color, --secondary-background-color */
+        .kpi-card{
+            border:1px solid rgba(128,128,128,0.22);
+            border-radius:14px;
+            padding:14px 14px;
+            background: var(--secondary-background-color);
+        }
+        .kpi-title{
+            font-size:12px;
+            font-weight:600;
+            letter-spacing:0.02em;
+            color: var(--text-color);
+            opacity: 0.70;
+        }
+        .kpi-value{
+            font-size:28px;
+            font-weight:800;
+            line-height:1.15;
+            color: var(--text-color);
+        }
+        .kpi-delta{
+            font-size:13px;
+            margin-top:6px;
+            color: var(--text-color);
+            opacity: 0.80;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     st.title(APP_TITLE)
 
     vm = load_vendor_map()

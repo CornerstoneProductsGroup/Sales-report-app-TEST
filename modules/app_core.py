@@ -2493,13 +2493,8 @@ def run_app():
     # Overview header (auto dark/light)
     st.markdown("""
     <style>
-    @media (prefers-color-scheme: dark) {
-      .overview-title { color: #ffffff; }
-    }
-    @media (prefers-color-scheme: light) {
-      .overview-title { color: #000000; }
-    }
-    </style>
+.overview-title { color: var(--text-color); }
+</style>
     """, unsafe_allow_html=True)
 
     st.markdown(
