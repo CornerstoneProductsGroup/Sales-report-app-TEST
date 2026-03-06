@@ -741,6 +741,22 @@ def selection_total_card(label: str, sales: float, units: float):
         unsafe_allow_html=True,
     )
 
+def top_two_card(label: str, entries: List[Tuple[str, float]]):
+    rows = []
+    for name, sales in entries[:2]:
+        rows.append(f"<div class='kpi-sub'><strong>{html.escape(str(name))}</strong> — {money(float(sales))}</div>")
+    if not rows:
+        rows = ["<div class='kpi-sub'>None</div>"]
+    st.markdown(
+        f"""
+        <div class="kpi-card">
+            <div class="kpi-title">{label}</div>
+            {''.join(rows)}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 def count_sales_card(label: str, count_value: int, sales_value: float, color: str = "var(--text-color)", signed_sales: bool = False, pct: float = np.nan):
     sales_txt = money(abs(float(sales_value)))
     if signed_sales and sales_value > 0:
@@ -920,7 +936,7 @@ def run_app():
         elif scope == "SKU":
             scope_pick = st.multiselect("SKU(s)", options=sorted(df_all["SKU"].dropna().unique()), default=[])
 
-        analysis_view = st.radio("Analysis View", ["Standard Intelligence", "Multi Month / Year Compare"], index=0)
+        analysis_view = st.radio("Analysis View", ["Standard Intelligence", "Month / Year Compare", "Multi Month / Year Compare"], index=0)
         multi_granularity = "Month"
         current_labels_sel: List[str] = []
         compare_labels_sel: List[str] = []
@@ -929,18 +945,33 @@ def run_app():
             timeframe_index = 2
             timeframe = st.selectbox("Timeframe", timeframe_options, index=timeframe_index)
             compare_mode = st.selectbox("Compare", ["None", "Prior period (same length)", "YoY (same dates)"], index=1)
-        else:
-            multi_granularity = st.selectbox("Compare By", ["Month", "Year"], index=0)
+        elif analysis_view == "Month / Year Compare":
+            multi_granularity = st.selectbox("Compare By", ["Month", "Year"], index=0, key="my_compare_by")
             if multi_granularity == "Month":
                 timeframe = "Custom Months"
                 period_options = available_month_labels(df_all)
-                default_current = period_options[-1:]
-                default_compare = period_options[-2:-1]
             else:
                 timeframe = "Custom Years"
                 period_options = available_year_labels(df_all)
-                default_current = period_options[-1:]
-                default_compare = period_options[-2:-1]
+            default_current = period_options[-1] if period_options else None
+            default_compare = period_options[-2] if len(period_options) > 1 else default_current
+            current_one = st.selectbox(f"Current {multi_granularity}", options=period_options, index=(len(period_options)-1 if period_options else 0))
+            compare_one = st.selectbox(f"Compare {multi_granularity}", options=period_options, index=(len(period_options)-2 if len(period_options)>1 else 0))
+            current_labels_sel = [current_one] if current_one else []
+            compare_labels_sel = [compare_one] if compare_one else []
+            compare_mode = "Custom selection" if compare_labels_sel else "None"
+        else:
+            multi_granularity = st.selectbox("Compare By", ["Month", "Year"], index=0, key="multi_compare_by")
+            if multi_granularity == "Month":
+                timeframe = "Custom Months"
+                period_options = available_month_labels(df_all)
+                default_current = period_options[-1:] if period_options else []
+                default_compare = period_options[-2:-1] if len(period_options) > 1 else default_current
+            else:
+                timeframe = "Custom Years"
+                period_options = available_year_labels(df_all)
+                default_current = period_options[-1:] if period_options else []
+                default_compare = period_options[-2:-1] if len(period_options) > 1 else default_current
             current_labels_sel = st.multiselect(f"Current {multi_granularity}s", options=period_options, default=default_current)
             compare_labels_sel = st.multiselect(f"Compare {multi_granularity}s", options=period_options, default=default_compare)
             compare_mode = "Custom selection" if compare_labels_sel else "None"
@@ -962,7 +993,7 @@ def run_app():
 
     # Choose current / comparison periods
     custom_labels = None
-    if analysis_view == "Multi Month / Year Compare":
+    if analysis_view in ("Month / Year Compare", "Multi Month / Year Compare"):
         dfA = filter_by_period_labels(df_scope, current_labels_sel, multi_granularity)
         dfB = filter_by_period_labels(df_scope, compare_labels_sel, multi_granularity) if compare_labels_sel else df_scope.iloc[0:0].copy()
         pA = period_from_df(dfA)
@@ -1059,6 +1090,23 @@ def run_app():
                 return None
             m["Δ"] = m["Sales_A"] - m["Sales_B"]
             m = m.sort_values("Δ", ascending=False)
+            row = m.iloc[0]
+            return str(row[level]), float(row["Sales_A"]), float(row["Sales_B"])
+
+        def _top_two_in_selection(df_in: pd.DataFrame, level: str):
+            if df_in.empty:
+                return []
+            g = df_in.groupby(level, as_index=False).agg(Sales=("Sales","sum")).sort_values("Sales", ascending=False)
+            return [(str(r[level]), float(r["Sales"])) for _, r in g.head(2).iterrows()]
+
+        def _top_decrease(level: str):
+            a = dfA.groupby(level, as_index=False).agg(Sales=("Sales","sum"))
+            b = dfB.groupby(level, as_index=False).agg(Sales=("Sales","sum"))
+            m = a.merge(b, on=level, how="outer", suffixes=("_A","_B")).fillna(0.0)
+            if m.empty:
+                return None
+            m["Δ"] = m["Sales_A"] - m["Sales_B"]
+            m = m.sort_values("Δ", ascending=True)
             row = m.iloc[0]
             return str(row[level]), float(row["Sales_A"]), float(row["Sales_B"])
 
@@ -1191,25 +1239,93 @@ def run_app():
         r = m.iloc[0]
         return str(r[level]), float(r["Sales_A"]), float(r["Sales_B"])
     
-    if analysis_view == "Multi Month / Year Compare":
+    if analysis_view == "Month / Year Compare":
         c1, c2, c3 = st.columns(3)
         with c1: kpi_card("Total Sales", money(kA["Sales"]), kdelta("Sales"))
         with c2: kpi_card("Total Units", f"{kA['Units']:,.0f}", kdelta("Units"))
         with c3: kpi_card("Avg Selling Price", money(kA["ASP"]), kdelta("ASP"))
-    
+
+        cur_sku = dfA.groupby("SKU", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum"))
+        cmp_sku = dfB.groupby("SKU", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum"))
+        cur_only = cur_sku.merge(cmp_sku[["SKU","Sales"]].rename(columns={"Sales":"Compare_Sales"}), on="SKU", how="left").fillna(0.0)
+        cur_only = cur_only[(cur_only["Sales"] > 0) & (cur_only["Compare_Sales"] <= 0)].copy()
+        cmp_only = cmp_sku.merge(cur_sku[["SKU","Sales"]].rename(columns={"Sales":"Current_Sales"}), on="SKU", how="left").fillna(0.0)
+        cmp_only = cmp_only[(cmp_only["Sales"] > 0) & (cmp_only["Current_Sales"] <= 0)].copy()
+        new_count = int(len(cur_only)); new_sales = float(cur_only["Sales"].sum())
+        lost_count = int(len(cmp_only)); lost_sales = float(cmp_only["Sales"].sum())
+        net_count = new_count - lost_count; net_sales = new_sales - lost_sales
+        net_pct = (net_sales / lost_sales) if lost_sales != 0 else (np.nan if net_sales == 0 else np.inf)
+
+        n1, n2, n3 = st.columns(3)
+        with n1: count_sales_card("New SKUs", new_count, new_sales, color="#2e7d32", signed_sales=True)
+        with n2: count_sales_card("Lost SKUs", lost_count, -lost_sales, color="#c62828", signed_sales=True)
+        with n3: count_sales_card("Net New vs Lost", net_count, net_sales, color=("#2e7d32" if net_sales > 0 else ("#c62828" if net_sales < 0 else "var(--text-color)")), signed_sales=True, pct=net_pct)
+
         st.write("")
-        new_df, lost_df = _new_lost_stats(dfA, dfB)
-        new_sales = float(new_df["Sales_A"].sum()) if not new_df.empty else 0.0
-        lost_sales = float(lost_df["Sales_B"].sum()) if not lost_df.empty else 0.0
-        net_count = int(len(new_df) - len(lost_df))
-        net_sales = float(new_sales - lost_sales)
-        net_pct = pct_change(new_sales, lost_sales) if lost_sales != 0 else (np.nan if new_sales == 0 else np.inf)
-    
+        g1, g2, g3, g4 = st.columns(4)
+        with g1:
+            selection_total_card(f"{a_lbl} Total", kA["Sales"], kA["Units"])
+            st.write("")
+            selection_total_card(f"{b_lbl} Total", kB["Sales"], kB["Units"])
+        with g2:
+            top_two_card(f"Top 2 Retailers ({a_lbl})", _top_two_in_selection(dfA, "Retailer"))
+            st.write("")
+            top_two_card(f"Top 2 Retailers ({b_lbl})", _top_two_in_selection(dfB, "Retailer"))
+        with g3:
+            top_two_card(f"Top 2 Vendors ({a_lbl})", _top_two_in_selection(dfA, "Vendor"))
+            st.write("")
+            top_two_card(f"Top 2 Vendors ({b_lbl})", _top_two_in_selection(dfB, "Vendor"))
+        with g4:
+            top_two_card(f"Top 2 SKUs ({a_lbl})", _top_two_in_selection(dfA, "SKU"))
+            st.write("")
+            top_two_card(f"Top 2 SKUs ({b_lbl})", _top_two_in_selection(dfB, "SKU"))
+
+        st.write("")
+        i1, i2, i3 = st.columns(3)
+        iR = _top_by_increase("Retailer")
+        iV = _top_by_increase("Vendor")
+        iS = _top_by_increase("SKU")
+        with i1:
+            if iR: biggest_increase_card("Retailer w/ Biggest Increase", iR[0], iR[1], iR[2])
+        with i2:
+            if iV: biggest_increase_card("Vendor w/ Biggest Increase", iV[0], iV[1], iV[2])
+        with i3:
+            if iS: biggest_increase_card("SKU w/ Biggest Increase", iS[0], iS[1], iS[2])
+
+        d1, d2, d3 = st.columns(3)
+        decR = _top_decrease("Retailer")
+        decV = _top_decrease("Vendor")
+        decS = _top_decrease("SKU")
+        with d1:
+            if decR: biggest_increase_card("Retailer w/ Biggest Decrease", decR[0], decR[1], decR[2])
+        with d2:
+            if decV: biggest_increase_card("Vendor w/ Biggest Decrease", decV[0], decV[1], decV[2])
+        with d3:
+            if decS: biggest_increase_card("SKU w/ Biggest Decrease", decS[0], decS[1], decS[2])
+
+    elif analysis_view == "Multi Month / Year Compare":
+        c1, c2, c3 = st.columns(3)
+        with c1: kpi_card("Total Sales", money(kA["Sales"]), kdelta("Sales"))
+        with c2: kpi_card("Total Units", f"{kA['Units']:,.0f}", kdelta("Units"))
+        with c3: kpi_card("Avg Selling Price", money(kA["ASP"]), kdelta("ASP"))
+
+        cur_sku = dfA.groupby("SKU", as_index=False).agg(Sales=("Sales","sum"))
+        cmp_sku = dfB.groupby("SKU", as_index=False).agg(Sales=("Sales","sum"))
+        new_df = cur_sku.merge(cmp_sku.rename(columns={"Sales":"Compare_Sales"}), on="SKU", how="left").fillna(0.0)
+        new_df = new_df[(new_df["Sales"] > 0) & (new_df["Compare_Sales"] <= 0)].copy()
+        lost_df = cmp_sku.merge(cur_sku.rename(columns={"Sales":"Current_Sales"}), on="SKU", how="left").fillna(0.0)
+        lost_df = lost_df[(lost_df["Sales"] > 0) & (lost_df["Current_Sales"] <= 0)].copy()
+        new_sales = float(new_df["Sales"].sum())
+        lost_sales = float(lost_df["Sales"].sum())
+        net_count = int(len(new_df)) - int(len(lost_df))
+        net_sales = new_sales - lost_sales
+        net_pct = (net_sales / lost_sales) if lost_sales != 0 else (np.nan if net_sales == 0 else np.inf)
+
         n1, n2, n3 = st.columns(3)
         with n1: count_sales_card("New SKUs", int(len(new_df)), new_sales, color="#2e7d32", signed_sales=True)
         with n2: count_sales_card("Lost SKUs", int(len(lost_df)), -lost_sales, color="#c62828", signed_sales=True)
         with n3: count_sales_card("Net New vs Lost", net_count, net_sales, color=("#2e7d32" if net_sales > 0 else ("#c62828" if net_sales < 0 else "var(--text-color)")), signed_sales=True, pct=net_pct)
-    
+
         st.write("")
         s1, s2, s3, s4, s5, s6 = st.columns(6)
         trA = _top_entity_in_selection(dfA, "Retailer")
@@ -1226,7 +1342,7 @@ def run_app():
             if tvA: leader_sales_card(f"Top Vendor ({a_lbl})", tvA[0], tvA[1], 0.0)
         with s6:
             if tvB: leader_sales_card(f"Top Vendor ({b_lbl})", tvB[0], tvB[1], 0.0)
-    
+
         st.write("")
         t1, t2, t3, t4, t5, t6 = st.columns(6)
         tsA = _top_entity_in_selection(dfA, "SKU")
@@ -1246,7 +1362,7 @@ def run_app():
             if iS: biggest_increase_card("SKU w/ Biggest Increase", iS[0], iS[1], iS[2])
         with t6:
             st.empty()
-    
+
         st.write("")
         d1, d2, d3 = st.columns(3)
         decR = _top_decrease("Retailer")
@@ -1324,8 +1440,8 @@ def run_app():
     
     st.divider()
     
-    if analysis_view == "Multi Month / Year Compare":
-        st.subheader("New Activity")
+    if analysis_view == "Month / Year Compare":
+        st.subheader("Current Only / Compare Only Activity")
         fe_cur = first_sale_ever(df_hist_for_new, pA)
         fe_cmp = first_sale_ever(df_hist_for_new, pB) if pB is not None else pd.DataFrame()
         pl_cur = new_placement(df_hist_for_new, pA)
@@ -1401,6 +1517,14 @@ def run_app():
             st.markdown("**Top Declining**")
             if dec.empty: st.caption("None.")
             else: render_df(dec[["SKU", f"Sales ({a_lbl})", f"Sales ({b_lbl})", "Difference", "% Change"]], height=360)
+    elif analysis_view == "Multi Month / Year Compare":
+        st.subheader("Multi Compare")
+        st.info("Multi Month / Year Compare is ready for selecting multiple months or years. The detailed KPI and table layout for 3+ period analysis is being kept separate so the 2-period compare stays stable.")
+        pivot_dim = st.selectbox("Compare rows by", options=["Retailer","Vendor"], index=0, key="multi_compare_dim_v2")
+        comp = dfA.groupby(pivot_dim, as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum"))
+        comp["Sales"] = comp["Sales"].map(money)
+        comp["Units"] = comp["Units"].map(lambda v: f"{float(v):,.0f}")
+        render_df(comp, height=360)
     else:
         # original standard view sections
         st.subheader("New Activity")
