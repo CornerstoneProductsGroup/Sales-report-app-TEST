@@ -162,8 +162,19 @@ def pick_period(df: pd.DataFrame, mode: str, n_weeks: int = 8) -> Optional[Perio
     if mode == "Week (latest)":
         start = anchor - pd.Timedelta(days=6)
         return Period(start=start.normalize(), end=anchor.normalize())
-    if mode == "YTD":
+    if mode == "This Month":
+        start = pd.Timestamp(year=anchor.year, month=anchor.month, day=1)
+        return Period(start=start, end=anchor.normalize())
+    if mode.startswith("Last ") and "month" in mode.lower():
+        months = int(re.findall(r"\d+", mode)[0])
+        start = (anchor.normalize() - pd.DateOffset(months=months) + pd.Timedelta(days=1)).normalize()
+        return Period(start=start, end=anchor.normalize())
+    if mode == "YTD" or mode == "This Year":
         start = pd.Timestamp(year=anchor.year, month=1, day=1)
+        return Period(start=start, end=anchor.normalize())
+    if mode.startswith("Last ") and "year" in mode.lower():
+        years = int(re.findall(r"\d+", mode)[0])
+        start = (anchor.normalize() - pd.DateOffset(years=years) + pd.Timedelta(days=1)).normalize()
         return Period(start=start, end=anchor.normalize())
     return None
 
@@ -192,8 +203,18 @@ def timeframe_short_label(timeframe: str) -> str:
             return f"{m[0]}W"
     if timeframe.startswith("Week"):
         return "Wk"
-    if timeframe == "YTD":
-        return "YTD"
+    if timeframe == "YTD" or timeframe == "This Year":
+        return "YTD" if timeframe == "YTD" else "Year"
+    if timeframe == "This Month":
+        return "Month"
+    if timeframe.startswith("Last ") and "month" in timeframe.lower():
+        m = re.findall(r"\d+", timeframe)
+        if m:
+            return f"{m[0]}M"
+    if timeframe.startswith("Last ") and "year" in timeframe.lower():
+        m = re.findall(r"\d+", timeframe)
+        if m:
+            return f"{m[0]}Y"
     return timeframe
 
 def ab_labels(timeframe: str, compare_mode: str, pA: Period, pB: Optional[Period]) -> Tuple[str, Optional[str]]:
@@ -641,8 +662,8 @@ def biggest_increase_card(label: str, name: str, current_sales: float, previous_
         f'''
         <div class="kpi-card">
             <div class="kpi-title">{label}</div>
-            <div class="kpi-big-main" style="color:{color}">{arrow} {money(delta)}</div>
             <div class="kpi-big-name">{html.escape(str(name))}</div>
+            <div class="kpi-big-main" style="color:{color}">{arrow} {money(delta)}</div>
             <div class="kpi-big-total">Total: {money(float(current_sales))}</div>
             {pct_html}
         </div>
@@ -718,7 +739,7 @@ def run_app():
             margin-top:4px;
         }
         .kpi-big-name{
-            font-size:18px;
+            font-size:22px;
             font-weight:700;
             line-height:1.15;
             margin-top:6px;
@@ -765,18 +786,19 @@ def run_app():
         /* Compact HTML tables used below Weekly Detail / Movers */
         .report-table{
             width:100% !important;
+            table-layout:auto;
             border-collapse: collapse;
-            font-size:13px !important;
-            line-height:1.25;
+            font-size:14px !important;
+            line-height:1.3;
         }
         .report-table th, .report-table td{
-            padding:4px 6px;
+            padding:6px 8px;
             border-bottom:1px solid rgba(128,128,128,0.18);
             text-align:left;
             white-space:nowrap;
         }
         .report-table th{
-            font-size:12px !important;
+            font-size:13px !important;
             font-weight:700;
             color:var(--text-color);
             opacity:0.82;
@@ -786,7 +808,7 @@ def run_app():
         }
         /* Keep dataframe text aligned with the rest of the app */
         div[data-testid="stDataFrame"] * {
-            font-size:13px !important;
+            font-size:14px !important;
         }
         </style>
         """,
@@ -827,7 +849,14 @@ def run_app():
         elif scope == "SKU":
             scope_pick = st.multiselect("SKU(s)", options=sorted(df_all["SKU"].dropna().unique()), default=[])
 
-        timeframe = st.selectbox("Timeframe", ["Week (latest)", "Last 4 weeks", "Last 8 weeks", "Last 13 weeks", "Last 26 weeks", "Last 52 weeks", "YTD"], index=2)
+        analysis_view = st.radio("Analysis View", ["Standard Intelligence", "Multi Month / Year Compare"], index=0)
+        if analysis_view == "Standard Intelligence":
+            timeframe_options = ["Week (latest)", "Last 4 weeks", "Last 8 weeks", "Last 13 weeks", "Last 26 weeks", "Last 52 weeks", "YTD"]
+            timeframe_index = 2
+        else:
+            timeframe_options = ["This Month", "Last 2 months", "Last 3 months", "Last 6 months", "Last 12 months", "This Year", "Last 2 years", "Last 3 years"]
+            timeframe_index = 2
+        timeframe = st.selectbox("Timeframe", timeframe_options, index=timeframe_index)
         compare_mode = st.selectbox("Compare", ["None", "Prior period (same length)", "YoY (same dates)"], index=1)
 
         min_sales = st.number_input("Min Sales ($) for lists", min_value=0.0, value=0.0, step=100.0)
@@ -1268,16 +1297,15 @@ def run_app():
         m = a.merge(b, on="SKU", how="outer").fillna(0.0)
 
         m["Sales (Current)"] = m["Sales_A"]
-        m["Avg Weekly Sales (Compare)"] = m["Sales_B"] / nB
-        m["Avg Weekly Sales (Current)"] = m["Sales_A"] / nA
-        m["Δ Avg Weekly Sales"] = m["Avg Weekly Sales (Current)"] - m["Avg Weekly Sales (Compare)"]
-        m["Δ %"] = np.where(m["Avg Weekly Sales (Compare)"] != 0, m["Δ Avg Weekly Sales"] / m["Avg Weekly Sales (Compare)"], np.nan)
+        m["Sales (Compare)"] = m["Sales_B"]
+        m["Sales Δ"] = m["Sales_A"] - m["Sales_B"]
+        m["Δ %"] = np.where(m["Sales_B"] != 0, m["Sales Δ"] / m["Sales_B"], np.nan)
 
         # thresholds based on volume in either period
         m = m[(m["Sales_A"] >= min_sales) | (m["Sales_B"] >= min_sales) | (m["Units_A"] >= min_units) | (m["Units_B"] >= min_units)].copy()
 
-        inc = m[m["Δ Avg Weekly Sales"] > 0].sort_values("Δ Avg Weekly Sales", ascending=False).head(10)
-        dec = m[m["Δ Avg Weekly Sales"] < 0].sort_values("Δ Avg Weekly Sales", ascending=True).head(10)
+        inc = m[m["Sales Δ"] > 0].sort_values("Sales Δ", ascending=False).head(10)
+        dec = m[m["Sales Δ"] < 0].sort_values("Sales Δ", ascending=True).head(10)
 
         def _fmt_diff(val: float) -> str:
             green = "#2e7d32"
@@ -1300,10 +1328,10 @@ def run_app():
         def _disp(df_in: pd.DataFrame) -> pd.DataFrame:
             if df_in.empty:
                 return df_in
-            out = df_in[["SKU","Sales (Current)","Avg Weekly Sales (Compare)","Δ Avg Weekly Sales","Δ %"]].copy()
+            out = df_in[["SKU","Sales (Current)","Sales (Compare)","Sales Δ","Δ %"]].copy()
             out["Sales (Current)"] = out["Sales (Current)"].map(money)
-            out["Avg Weekly Sales (Compare)"] = out["Avg Weekly Sales (Compare)"].map(money)
-            out["Δ Avg Weekly Sales"] = out["Δ Avg Weekly Sales"].map(_fmt_diff)
+            out["Sales (Compare)"] = out["Sales (Compare)"].map(money)
+            out["Sales Δ"] = out["Sales Δ"].map(_fmt_diff)
             out["Δ %"] = out["Δ %"].map(_fmt_pct)
             return out
 
@@ -1323,13 +1351,13 @@ def run_app():
 
         a,b,c = st.columns(3)
         with a:
-            st.markdown("**Top Increasing (Avg weekly sales vs compare)**")
+            st.markdown("**Top Increasing**")
             if not inc_disp.empty:
                 st.markdown(inc_disp.to_html(escape=False, index=False, classes='report-table'), unsafe_allow_html=True)
             else:
                 st.caption("None.")
         with b:
-            st.markdown("**Top Declining (Avg weekly sales vs compare)**")
+            st.markdown("**Top Declining**")
             if not dec_disp.empty:
                 st.markdown(dec_disp.to_html(escape=False, index=False, classes='report-table'), unsafe_allow_html=True)
             else:
