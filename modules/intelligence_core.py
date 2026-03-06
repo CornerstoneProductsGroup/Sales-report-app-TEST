@@ -741,10 +741,27 @@ def selection_total_card(label: str, sales: float, units: float):
         unsafe_allow_html=True,
     )
 
-def top_two_card(label: str, entries: List[Tuple[str, float]]):
+def top_two_card(label: str, entries: List[dict]):
     rows = []
-    for name, sales in entries[:2]:
-        rows.append(f"<div class='kpi-sub'><strong>{html.escape(str(name))}</strong> — {money(float(sales))}</div>")
+    for item in entries[:2]:
+        name = html.escape(str(item.get("name", "")))
+        sales = float(item.get("sales", 0.0))
+        other_sales = float(item.get("other_sales", 0.0))
+        share = float(item.get("share", np.nan))
+        delta = sales - other_sales
+        pct = pct_change(sales, other_sales)
+        color = "#2e7d32" if delta > 0 else ("#c62828" if delta < 0 else "var(--text-color)")
+        arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "•")
+        pct_html = f" ({pct_fmt(pct)})" if not pd.isna(pct) else ""
+        share_html = f"{share*100:,.1f}% of total" if not pd.isna(share) else ""
+        rows.append(
+            f"<div class='top-two-item'>"
+            f"<div class='kpi-big-name'>{name}</div>"
+            f"<div class='kpi-sub' style='font-size:16px;font-weight:700;color:var(--text-color)'>{money(sales)}</div>"
+            f"<div class='kpi-delta' style='color:{color}'>{arrow} {money(delta)}{pct_html}</div>"
+            f"<div class='kpi-sub'>{share_html}</div>"
+            f"</div>"
+        )
     if not rows:
         rows = ["<div class='kpi-sub'>None</div>"]
     st.markdown(
@@ -1227,6 +1244,27 @@ def run_app():
         g = g.sort_values(["Sales", level], ascending=[False, True])
         r = g.iloc[0]
         return str(r[level]), float(r["Sales"])
+
+    def _top_two_with_compare(df_sel: pd.DataFrame, df_other: pd.DataFrame, level: str):
+        if df_sel.empty:
+            return []
+        cur = df_sel.groupby(level, as_index=False).agg(Sales=("Sales", "sum"))
+        oth = df_other.groupby(level, as_index=False).agg(Other_Sales=("Sales", "sum")) if not df_other.empty else pd.DataFrame(columns=[level, "Other_Sales"])
+        m = cur.merge(oth, on=level, how="left").fillna(0.0)
+        if m.empty:
+            return []
+        total_sales = float(m["Sales"].sum())
+        m = m.sort_values(["Sales", level], ascending=[False, True]).head(2)
+        out = []
+        for _, r in m.iterrows():
+            sales = float(r["Sales"])
+            out.append({
+                "name": str(r[level]),
+                "sales": sales,
+                "other_sales": float(r["Other_Sales"]),
+                "share": (sales / total_sales) if total_sales else np.nan,
+            })
+        return out
     
     def _top_decrease(level: str):
         a = dfA.groupby(level, as_index=False).agg(Sales_A=("Sales","sum"))
@@ -1268,17 +1306,17 @@ def run_app():
             st.write("")
             selection_total_card(f"{b_lbl} Total", kB["Sales"], kB["Units"])
         with g2:
-            top_two_card(f"Top 2 Retailers ({a_lbl})", _top_two_in_selection(dfA, "Retailer"))
+            top_two_card(f"Top 2 Retailers ({a_lbl})", _top_two_with_compare(dfA, dfB, "Retailer"))
             st.write("")
-            top_two_card(f"Top 2 Retailers ({b_lbl})", _top_two_in_selection(dfB, "Retailer"))
+            top_two_card(f"Top 2 Retailers ({b_lbl})", _top_two_with_compare(dfB, dfA, "Retailer"))
         with g3:
-            top_two_card(f"Top 2 Vendors ({a_lbl})", _top_two_in_selection(dfA, "Vendor"))
+            top_two_card(f"Top 2 Vendors ({a_lbl})", _top_two_with_compare(dfA, dfB, "Vendor"))
             st.write("")
-            top_two_card(f"Top 2 Vendors ({b_lbl})", _top_two_in_selection(dfB, "Vendor"))
+            top_two_card(f"Top 2 Vendors ({b_lbl})", _top_two_with_compare(dfB, dfA, "Vendor"))
         with g4:
-            top_two_card(f"Top 2 SKUs ({a_lbl})", _top_two_in_selection(dfA, "SKU"))
+            top_two_card(f"Top 2 SKUs ({a_lbl})", _top_two_with_compare(dfA, dfB, "SKU"))
             st.write("")
-            top_two_card(f"Top 2 SKUs ({b_lbl})", _top_two_in_selection(dfB, "SKU"))
+            top_two_card(f"Top 2 SKUs ({b_lbl})", _top_two_with_compare(dfB, dfA, "SKU"))
 
         st.write("")
         i1, i2, i3 = st.columns(3)
