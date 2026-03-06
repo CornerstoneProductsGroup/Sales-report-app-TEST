@@ -948,9 +948,9 @@ def run_app():
         green = "#2e7d32"
         red = "#c62828"
         color = green if d > 0 else (red if d < 0 else "var(--text-color)")
-            arrow = '▲ ' if d>0 else ('▼ ' if d<0 else '')
+        arrow = '▲ ' if d>0 else ('▼ ' if d<0 else '')
         return (
-            f"<span class='delta-abs' style='color:{color}'>{pct_fmt(pct_change(cur, prev))}</span>"
+            f"<span class='delta-abs' style='color:{color}'>{arrow}{pct_fmt(pct_change(cur, prev))}</span>"
             f"<span class='delta-note'>vs comp</span>"
         )
 
