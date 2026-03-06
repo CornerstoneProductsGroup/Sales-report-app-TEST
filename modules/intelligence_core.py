@@ -631,6 +631,25 @@ def kpi_card(label: str, value: str, delta: Optional[str] = None):
         unsafe_allow_html=True,
     )
 
+def biggest_increase_card(label: str, name: str, current_sales: float, previous_sales: float):
+    delta = float(current_sales) - float(previous_sales)
+    pct = pct_change(float(current_sales), float(previous_sales))
+    color = "#2e7d32" if delta > 0 else ("#c62828" if delta < 0 else "var(--text-color)")
+    arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "•")
+    pct_html = "" if pd.isna(pct) else f'<div class="kpi-big-pct" style="color:{color}">({pct_fmt(pct)})</div>'
+    st.markdown(
+        f'''
+        <div class="kpi-card">
+            <div class="kpi-title">{label}</div>
+            <div class="kpi-big-main" style="color:{color}">{arrow} {money(delta)}</div>
+            <div class="kpi-big-name">{html.escape(str(name))}</div>
+            <div class="kpi-big-total">Total: {money(float(current_sales))}</div>
+            {pct_html}
+        </div>
+        ''',
+        unsafe_allow_html=True,
+    )
+
 def render_df(df: pd.DataFrame, height: int = 320):
     st.dataframe(df, use_container_width=True, height=height, hide_index=True)
 
@@ -674,6 +693,30 @@ def run_app():
         .kpi-delta .delta-abs{ font-weight:800; }
         .kpi-delta .delta-pct{ font-weight:700; opacity:0.88; margin-left:6px; }
         .kpi-delta .delta-note{ opacity:0.75; margin-left:6px; }
+        .kpi-big-main{
+            font-size:30px;
+            font-weight:800;
+            line-height:1.05;
+            margin-top:4px;
+        }
+        .kpi-big-name{
+            font-size:18px;
+            font-weight:700;
+            line-height:1.15;
+            margin-top:6px;
+            color: var(--text-color);
+        }
+        .kpi-big-total{
+            font-size:13px;
+            opacity:0.78;
+            margin-top:6px;
+            color: var(--text-color);
+        }
+        .kpi-big-pct{
+            font-size:13px;
+            font-weight:700;
+            margin-top:4px;
+        }
         .intel-card{
             border:1px solid rgba(128,128,128,0.22);
             border-radius:16px;
@@ -992,13 +1035,13 @@ def run_app():
 
     with r2c1:
         if iR:
-            kpi_card("Retailer w/ Biggest Increase", _leader_value(iR[0], iR[1]), _delta_html(iR[1], iR[2], is_money=True, note=""))
+            biggest_increase_card("Retailer w/ Biggest Increase", iR[0], iR[1], iR[2])
     with r2c2:
         if iV:
-            kpi_card("Vendor w/ Biggest Increase", _leader_value(iV[0], iV[1]), _delta_html(iV[1], iV[2], is_money=True, note=""))
+            biggest_increase_card("Vendor w/ Biggest Increase", iV[0], iV[1], iV[2])
     with r2c3:
         if iS:
-            kpi_card("SKU w/ Biggest Increase", _leader_value(iS[0], iS[1]), _delta_html(iS[1], iS[2], is_money=True, note=""))
+            biggest_increase_card("SKU w/ Biggest Increase", iS[0], iS[1], iS[2])
 
     st.write("")
     # 2) Drivers (two tables)
