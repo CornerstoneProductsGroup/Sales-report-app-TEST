@@ -646,11 +646,34 @@ def run_app():
         """
         <style>
         /* Streamlit theme variables: --text-color, --background-color, --secondary-background-color */
+        .section-block{
+            margin: 10px 0 18px 0;
+            padding: 16px;
+            border-radius: 18px;
+            background: color-mix(in srgb, var(--background-color) 88%, var(--text-color) 12%);
+            border: 1px solid rgba(128,128,128,0.14);
+        }
+        .section-label{
+            font-size: 12px;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            color: var(--text-color);
+            opacity: 0.72;
+            margin: 0 0 10px 2px;
+            text-transform: uppercase;
+        }
         .kpi-card{
-            border:1px solid rgba(128,128,128,0.22);
-            border-radius:14px;
-            padding:14px 14px;
-            background: var(--secondary-background-color);
+            padding: 22px;
+            border-radius: 14px;
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.10);
+            transition: all 0.25s ease;
+        }
+        .kpi-card:hover{
+            transform: translateY(-2px);
+            border-color: rgba(255,255,255,0.20);
         }
         .kpi-title{
             font-size:12px;
@@ -675,11 +698,13 @@ def run_app():
         .kpi-delta .delta-pct{ font-weight:700; opacity:0.88; margin-left:6px; }
         .kpi-delta .delta-note{ opacity:0.75; margin-left:6px; }
         .intel-card{
-            border:1px solid rgba(128,128,128,0.22);
+            border:1px solid rgba(255,255,255,0.10);
             border-radius:16px;
-            padding:14px 16px;
-            background: var(--secondary-background-color);
-            margin-bottom:14px;
+            padding:18px 18px;
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            margin-bottom:0;
         }
         .intel-header{
             font-size:12px;
@@ -917,6 +942,7 @@ def run_app():
 
     _lis = "".join([f"<li>{_md_bold_to_html(x)}</li>" for x in _items])
 
+    st.markdown('<div class="section-block"><div class="section-label">Intelligence Summary</div>', unsafe_allow_html=True)
     st.markdown(
         f"""
         <div class="intel-card">
@@ -930,7 +956,9 @@ def run_app():
         """,
         unsafe_allow_html=True,
     )
+    st.markdown('</div>', unsafe_allow_html=True)
 
+    st.markdown('<div class="section-block"><div class="section-label">Primary KPIs</div>', unsafe_allow_html=True)
     # 1) KPI row
     c1,c2,c3,c4,c5,c6 = st.columns(6)
     def kdelta(key: str) -> str:
@@ -961,8 +989,9 @@ def run_app():
     with c5: kpi_card("First Sales", f"{len(first_ever):,}" , "")
     with c6: kpi_card("New Placements", f"{len(placements):,}", "")
 
-    st.write("")
+    st.markdown('</div>', unsafe_allow_html=True)
 
+    st.markdown('<div class="section-block"><div class="section-label">Current Leaders</div>', unsafe_allow_html=True)
 
     # 1B) Leader KPI rows (based on current period + comparison)
     r1c1, r1c2, r1c3 = st.columns(3)
@@ -983,6 +1012,10 @@ def run_app():
         if tS:
             kpi_card("Top SKU (Sales)", _leader_value(tS[0], tS[1]), _delta_html(tS[1], tS[2], is_money=True, note=""))
 
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="section-block"><div class="section-label">Biggest Gains</div>', unsafe_allow_html=True)
+
     r2c1, r2c2, r2c3 = st.columns(3)
     iR = _top_by_increase("Retailer")
     iV = _top_by_increase("Vendor")
@@ -998,6 +1031,7 @@ def run_app():
         if iS:
             kpi_card("SKU w/ Biggest Increase", _leader_value(iS[0], iS[1]), _delta_html(iS[1], iS[2], is_money=True, note=""))
 
+    st.markdown('</div>', unsafe_allow_html=True)
     st.write("")
     # 2) Drivers (two tables)
     st.subheader("Drivers (Contribution to change)")
