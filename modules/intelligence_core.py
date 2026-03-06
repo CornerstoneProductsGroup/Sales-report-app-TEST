@@ -759,6 +759,7 @@ def selection_total_card(label: str, cur_kpi: Dict[str, float], cmp_kpi: Dict[st
             <div class="kpi-sub" style="font-size:16px;font-weight:700;color:var(--text-color);">{units:,.0f}</div>
             <div class="kpi-delta" style="color:{units_color};margin-bottom:8px;">{units_arrow} {units_delta:,.0f}{units_pct_html} &nbsp; • &nbsp; ASP {money(asp)}</div>
             <div class="kpi-sub" style="margin-top:6px;">Active SKUs: {int(cur_kpi.get('Active SKUs', 0)):,} &nbsp; • &nbsp; Retailers: {int(cur_kpi.get('Active Retailers', 0)):,} &nbsp; • &nbsp; Vendors: {int(cur_kpi.get('Active Vendors', 0)):,}</div>
+            <div class="kpi-sub" style="margin-top:4px;">Avg Units / SKU: {(units / cur_kpi.get('Active SKUs', 0)) if cur_kpi.get('Active SKUs', 0) else 0:,.1f} &nbsp; • &nbsp; Avg Sales / SKU: {money((sales / cur_kpi.get('Active SKUs', 0)) if cur_kpi.get('Active SKUs', 0) else 0)}</div>
         </div>
         """,
         unsafe_allow_html=True,
