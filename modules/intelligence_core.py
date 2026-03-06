@@ -729,13 +729,36 @@ def leader_sales_card(label: str, name: str, current_sales: float, previous_sale
 
 
 
-def selection_total_card(label: str, sales: float, units: float):
+def selection_total_card(label: str, cur_kpi: Dict[str, float], cmp_kpi: Dict[str, float]):
+    sales = float(cur_kpi.get("Sales", 0.0))
+    prev_sales = float(cmp_kpi.get("Sales", 0.0))
+    sales_delta = sales - prev_sales
+    sales_pct = pct_change(sales, prev_sales)
+    sales_color = "#2e7d32" if sales_delta > 0 else ("#c62828" if sales_delta < 0 else "var(--text-color)")
+    sales_arrow = "▲" if sales_delta > 0 else ("▼" if sales_delta < 0 else "•")
+
+    units = float(cur_kpi.get("Units", 0.0))
+    prev_units = float(cmp_kpi.get("Units", 0.0))
+    units_delta = units - prev_units
+    units_pct = pct_change(units, prev_units)
+    units_color = "#2e7d32" if units_delta > 0 else ("#c62828" if units_delta < 0 else "var(--text-color)")
+    units_arrow = "▲" if units_delta > 0 else ("▼" if units_delta < 0 else "•")
+
+    asp = float(cur_kpi.get("ASP", 0.0))
+    sales_pct_html = f" ({pct_fmt(sales_pct)})" if not pd.isna(sales_pct) else ""
+    units_pct_html = f" ({pct_fmt(units_pct)})" if not pd.isna(units_pct) else ""
+
     st.markdown(
         f"""
         <div class="kpi-card">
             <div class="kpi-title">{label}</div>
-            <div class="kpi-value">{money(float(sales))}</div>
-            <div class="kpi-sub">Units: {units:,.0f}</div>
+            <div class="kpi-sub" style="font-size:12px;opacity:0.75;margin-bottom:2px;">Total Sales</div>
+            <div class="kpi-value">{money(sales)}</div>
+            <div class="kpi-delta" style="color:{sales_color};margin-bottom:8px;">{sales_arrow} {money(sales_delta)}{sales_pct_html}</div>
+            <div class="kpi-sub" style="font-size:12px;opacity:0.75;margin-bottom:2px;">Total Units</div>
+            <div class="kpi-sub" style="font-size:16px;font-weight:700;color:var(--text-color);">{units:,.0f}</div>
+            <div class="kpi-delta" style="color:{units_color};margin-bottom:8px;">{units_arrow} {units_delta:,.0f}{units_pct_html} &nbsp; • &nbsp; ASP {money(asp)}</div>
+            <div class="kpi-sub" style="margin-top:6px;">Active SKUs: {int(cur_kpi.get('Active SKUs', 0)):,} &nbsp; • &nbsp; Retailers: {int(cur_kpi.get('Active Retailers', 0)):,} &nbsp; • &nbsp; Vendors: {int(cur_kpi.get('Active Vendors', 0)):,}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1302,9 +1325,9 @@ def run_app():
         st.write("")
         g1, g2, g3, g4 = st.columns(4)
         with g1:
-            selection_total_card(f"{a_lbl} Total", kA["Sales"], kA["Units"])
+            selection_total_card(f"{a_lbl} Total", kA, kB)
             st.write("")
-            selection_total_card(f"{b_lbl} Total", kB["Sales"], kB["Units"])
+            selection_total_card(f"{b_lbl} Total", kB, kA)
         with g2:
             top_two_card(f"Top 2 Retailers ({a_lbl})", _top_two_with_compare(dfA, dfB, "Retailer"))
             st.write("")
@@ -1370,8 +1393,8 @@ def run_app():
         trB = _top_entity_in_selection(dfB, "Retailer")
         tvA = _top_entity_in_selection(dfA, "Vendor")
         tvB = _top_entity_in_selection(dfB, "Vendor")
-        with s1: selection_total_card(f"{a_lbl} Total", kA["Sales"], kA["Units"])
-        with s2: selection_total_card(f"{b_lbl} Total", kB["Sales"], kB["Units"])
+        with s1: selection_total_card(f"{a_lbl} Total", kA, kB)
+        with s2: selection_total_card(f"{b_lbl} Total", kB, kA)
         with s3:
             if trA: leader_sales_card(f"Top Retailer ({a_lbl})", trA[0], trA[1], 0.0)
         with s4:
