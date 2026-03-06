@@ -647,23 +647,16 @@ def run_app():
         <style>
         /* Streamlit theme variables: --text-color, --background-color, --secondary-background-color */
         .section-block{
-            margin: 10px 0 18px 0;
-            padding: 16px;
-            border-radius: 18px;
-            background: color-mix(in srgb, var(--background-color) 88%, var(--text-color) 12%);
-            border: 1px solid rgba(128,128,128,0.14);
+            margin: 8px 0 10px 0;
+            padding: 0;
+            background: transparent;
+            border: 0;
         }
         .section-label{
-            font-size: 12px;
-            font-weight: 800;
-            letter-spacing: 0.06em;
-            color: var(--text-color);
-            opacity: 0.72;
-            margin: 0 0 10px 2px;
-            text-transform: uppercase;
+            display:none;
         }
         .kpi-card{
-            padding: 22px;
+            padding: 16px 16px 14px 16px;
             border-radius: 14px;
             background: rgba(255,255,255,0.05);
             backdrop-filter: blur(10px);
@@ -683,14 +676,14 @@ def run_app():
             opacity: 0.70;
         }
         .kpi-value{
-            font-size:28px;
+            font-size:26px;
             font-weight:800;
             line-height:1.15;
             color: var(--text-color);
         }
         .kpi-delta{
-            font-size:13px;
-            margin-top:6px;
+            font-size:12px;
+            margin-top:4px;
             color: var(--text-color);
             opacity: 0.80;
         }
@@ -942,7 +935,7 @@ def run_app():
 
     _lis = "".join([f"<li>{_md_bold_to_html(x)}</li>" for x in _items])
 
-    st.markdown('<div class="section-block"><div class="section-label">Intelligence Summary</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-block">', unsafe_allow_html=True)
     st.markdown(
         f"""
         <div class="intel-card">
@@ -958,7 +951,7 @@ def run_app():
     )
     st.markdown('</div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="section-block"><div class="section-label">Primary KPIs</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-block">', unsafe_allow_html=True)
     # 1) KPI row
     c1,c2,c3,c4,c5,c6 = st.columns(6)
     def kdelta(key: str) -> str:
@@ -991,7 +984,7 @@ def run_app():
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="section-block"><div class="section-label">Current Leaders</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-block">', unsafe_allow_html=True)
 
     # 1B) Leader KPI rows (based on current period + comparison)
     r1c1, r1c2, r1c3 = st.columns(3)
@@ -1014,7 +1007,7 @@ def run_app():
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="section-block"><div class="section-label">Biggest Gains</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-block">', unsafe_allow_html=True)
 
     r2c1, r2c2, r2c3 = st.columns(3)
     iR = _top_by_increase("Retailer")
