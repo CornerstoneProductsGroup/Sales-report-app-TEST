@@ -1145,459 +1145,459 @@ def run_app():
     )
 
 
-# 1) KPI rows
-def _new_lost_stats(df_cur: pd.DataFrame, df_cmp: pd.DataFrame):
-    cur_s = df_cur.groupby("SKU", as_index=False).agg(Sales_A=("Sales","sum"))
-    cmp_s = df_cmp.groupby("SKU", as_index=False).agg(Sales_B=("Sales","sum"))
-    m = cur_s.merge(cmp_s, on="SKU", how="outer").fillna(0.0)
-    new_df = m[(m["Sales_A"] > 0) & (m["Sales_B"] <= 0)].copy()
-    lost_df = m[(m["Sales_B"] > 0) & (m["Sales_A"] <= 0)].copy()
-    return new_df, lost_df
-
-def _top_entity_in_selection(df_sel: pd.DataFrame, level: str):
-    if df_sel.empty:
-        return None
-    g = df_sel.groupby(level, as_index=False).agg(Sales=("Sales","sum"))
-    if g.empty:
-        return None
-    g = g.sort_values(["Sales", level], ascending=[False, True])
-    r = g.iloc[0]
-    return str(r[level]), float(r["Sales"])
-
-def _top_decrease(level: str):
-    a = dfA.groupby(level, as_index=False).agg(Sales_A=("Sales","sum"))
-    b = dfB.groupby(level, as_index=False).agg(Sales_B=("Sales","sum"))
-    m = a.merge(b, on=level, how="outer").fillna(0.0)
-    m["Δ"] = m["Sales_A"] - m["Sales_B"]
-    if m.empty:
-        return None
-    m = m.sort_values("Δ", ascending=True)
-    r = m.iloc[0]
-    return str(r[level]), float(r["Sales_A"]), float(r["Sales_B"])
-
-if analysis_view == "Multi Month / Year Compare":
-    c1, c2, c3 = st.columns(3)
-    with c1: kpi_card("Total Sales", money(kA["Sales"]), kdelta("Sales"))
-    with c2: kpi_card("Total Units", f"{kA['Units']:,.0f}", kdelta("Units"))
-    with c3: kpi_card("Avg Selling Price", money(kA["ASP"]), kdelta("ASP"))
-
-    st.write("")
-    new_df, lost_df = _new_lost_stats(dfA, dfB)
-    new_sales = float(new_df["Sales_A"].sum()) if not new_df.empty else 0.0
-    lost_sales = float(lost_df["Sales_B"].sum()) if not lost_df.empty else 0.0
-    net_count = int(len(new_df) - len(lost_df))
-    net_sales = float(new_sales - lost_sales)
-    net_pct = pct_change(new_sales, lost_sales) if lost_sales != 0 else (np.nan if new_sales == 0 else np.inf)
-
-    n1, n2, n3 = st.columns(3)
-    with n1: count_sales_card("New SKUs", int(len(new_df)), new_sales, color="#2e7d32", signed_sales=True)
-    with n2: count_sales_card("Lost SKUs", int(len(lost_df)), -lost_sales, color="#c62828", signed_sales=True)
-    with n3: count_sales_card("Net New vs Lost", net_count, net_sales, color=("#2e7d32" if net_sales > 0 else ("#c62828" if net_sales < 0 else "var(--text-color)")), signed_sales=True, pct=net_pct)
-
-    st.write("")
-    s1, s2, s3, s4, s5, s6 = st.columns(6)
-    trA = _top_entity_in_selection(dfA, "Retailer")
-    trB = _top_entity_in_selection(dfB, "Retailer")
-    tvA = _top_entity_in_selection(dfA, "Vendor")
-    tvB = _top_entity_in_selection(dfB, "Vendor")
-    with s1: selection_total_card(f"{a_lbl} Total", kA["Sales"], kA["Units"])
-    with s2: selection_total_card(f"{b_lbl} Total", kB["Sales"], kB["Units"])
-    with s3:
-        if trA: leader_sales_card(f"Top Retailer ({a_lbl})", trA[0], trA[1], 0.0)
-    with s4:
-        if trB: leader_sales_card(f"Top Retailer ({b_lbl})", trB[0], trB[1], 0.0)
-    with s5:
-        if tvA: leader_sales_card(f"Top Vendor ({a_lbl})", tvA[0], tvA[1], 0.0)
-    with s6:
-        if tvB: leader_sales_card(f"Top Vendor ({b_lbl})", tvB[0], tvB[1], 0.0)
-
-    st.write("")
-    t1, t2, t3, t4, t5, t6 = st.columns(6)
-    tsA = _top_entity_in_selection(dfA, "SKU")
-    tsB = _top_entity_in_selection(dfB, "SKU")
-    iR = _top_by_increase("Retailer")
-    iV = _top_by_increase("Vendor")
-    iS = _top_by_increase("SKU")
-    with t1:
-        if tsA: leader_sales_card(f"Top SKU ({a_lbl})", tsA[0], tsA[1], 0.0)
-    with t2:
-        if tsB: leader_sales_card(f"Top SKU ({b_lbl})", tsB[0], tsB[1], 0.0)
-    with t3:
-        if iR: biggest_increase_card("Retailer w/ Biggest Increase", iR[0], iR[1], iR[2])
-    with t4:
-        if iV: biggest_increase_card("Vendor w/ Biggest Increase", iV[0], iV[1], iV[2])
-    with t5:
-        if iS: biggest_increase_card("SKU w/ Biggest Increase", iS[0], iS[1], iS[2])
-    with t6:
-        st.empty()
-
-    st.write("")
-    d1, d2, d3 = st.columns(3)
-    decR = _top_decrease("Retailer")
-    decV = _top_decrease("Vendor")
-    decS = _top_decrease("SKU")
-    with d1:
-        if decR: biggest_increase_card("Retailer w/ Biggest Decrease", decR[0], decR[1], decR[2])
-    with d2:
-        if decV: biggest_increase_card("Vendor w/ Biggest Decrease", decV[0], decV[1], decV[2])
-    with d3:
-        if decS: biggest_increase_card("SKU w/ Biggest Decrease", decS[0], decS[1], decS[2])
-else:
-    c1,c2,c3,c4,c5,c6 = st.columns(6)
-    with c1: kpi_card("Total Sales", money(kA["Sales"]), kdelta("Sales"))
-    with c2: kpi_card("Total Units", f"{kA['Units']:,.0f}", kdelta("Units"))
-    with c3: kpi_card("Avg Selling Price", money(kA["ASP"]), kdelta("ASP"))
-    with c4: kpi_card("Active SKUs", f"{kA['Active SKUs']:,}", kdelta("Active SKUs"))
-    with c5: kpi_card("First Sales", f"{len(first_ever):,}" , "")
-    with c6: kpi_card("New Placements", f"{len(placements):,}", "")
-
-    st.write("")
-    r1c1, r1c2, r1c3 = st.columns(3)
-    tR = _top_by_current("Retailer")
-    tV = _top_by_current("Vendor")
-    tS = _top_by_current("SKU")
-    with r1c1:
-        if tR: leader_sales_card("Top Retailer (Sales)", tR[0], tR[1], tR[2])
-    with r1c2:
-        if tV: leader_sales_card("Top Vendor (Sales)", tV[0], tV[1], tV[2])
-    with r1c3:
-        if tS: leader_sales_card("Top SKU (Sales)", tS[0], tS[1], tS[2])
-
-    r2c1, r2c2, r2c3 = st.columns(3)
-    iR = _top_by_increase("Retailer")
-    iV = _top_by_increase("Vendor")
-    iS = _top_by_increase("SKU")
-    with r2c1:
-        if iR: biggest_increase_card("Retailer w/ Biggest Increase", iR[0], iR[1], iR[2])
-    with r2c2:
-        if iV: biggest_increase_card("Vendor w/ Biggest Increase", iV[0], iV[1], iV[2])
-    with r2c3:
-        if iS: biggest_increase_card("SKU w/ Biggest Increase", iS[0], iS[1], iS[2])
-
-    st.write("")
-    # 2) Drivers (two tables)
-    st.subheader("Drivers (Contribution to change)")
-    if compare_mode == "None":
-        st.info("Select a comparison mode to compute drivers.")
-    else:
-        drv_show = drv.copy()
-        drv_show = drv_show[(drv_show["Sales_A"] >= min_sales) | (drv_show["Sales_B"] >= min_sales)]
-        pos = drv_show[drv_show["Sales_Δ"] > 0].head(10).copy()
-        neg = drv_show[drv_show["Sales_Δ"] < 0].sort_values("Sales_Δ").head(10).copy()
-
-        for d in (pos, neg):
-            d["Sales_A"] = d["Sales_A"].map(money)
-            d["Sales_B"] = d["Sales_B"].map(money)
-            d["Sales_Δ"] = d["Sales_Δ"].map(lambda v: f"{money(v)}")
-            d["Contribution_%"] = d["Contribution_%"].map(pct_fmt)
-
-        left,right = st.columns(2)
-
-        # Rename A/B columns for clearer display
-        pos_disp = rename_ab_columns(pos, a_lbl, b_lbl)
-        neg_disp = rename_ab_columns(neg, a_lbl, b_lbl)
-        sales_a_col = f"Sales ({a_lbl})"
-        sales_b_col = f"Sales ({b_lbl})" if b_lbl else "Sales (Comparison)"
-
-        with left:
-            st.markdown("**Top Positive Contributors**")
-            render_df(pos_disp[[driver_level, sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=320)
-        with right:
-            st.markdown("**Top Negative Contributors**")
-            render_df(neg_disp[[driver_level, sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=320)
-
-st.divider()
-
-if analysis_view == "Multi Month / Year Compare":
-    st.subheader("New Activity")
-    fe_cur = first_sale_ever(df_hist_for_new, pA)
-    fe_cmp = first_sale_ever(df_hist_for_new, pB) if pB is not None else pd.DataFrame()
-    pl_cur = new_placement(df_hist_for_new, pA)
-    pl_cmp = new_placement(df_hist_for_new, pB) if pB is not None else pd.DataFrame()
-    cur_s = dfA.groupby("SKU", as_index=False).agg(Current_Sales=("Sales","sum"))
-    cmp_s = dfB.groupby("SKU", as_index=False).agg(Compare_Sales=("Sales","sum"))
-    lost = cmp_s.merge(cur_s, on="SKU", how="left").fillna(0.0)
-    lost = lost[(lost["Compare_Sales"] > 0) & (lost["Current_Sales"] <= 0)].copy().sort_values("Compare_Sales", ascending=False)
-
-    a1, a2 = st.columns(2)
-    with a1:
-        st.markdown(f"**First Ever Sales — {a_lbl}**")
-        if fe_cur.empty: st.caption("None.")
-        else: render_df(fe_cur[["SKU","FirstWeek","FirstRetailer","FirstVendor"]].rename(columns={"FirstWeek":"First Week","FirstRetailer":"Retailer","FirstVendor":"Vendor"}), height=240)
-        st.markdown(f"**New Placements — {a_lbl}**")
-        if pl_cur.empty: st.caption("None.")
-        else: render_df(pl_cur[["SKU","Retailer","FirstWeek","Vendor"]].rename(columns={"FirstWeek":"First Week"}), height=240)
-    with a2:
-        st.markdown(f"**First Ever Sales — {b_lbl}**")
-        if fe_cmp.empty: st.caption("None.")
-        else: render_df(fe_cmp[["SKU","FirstWeek","FirstRetailer","FirstVendor"]].rename(columns={"FirstWeek":"First Week","FirstRetailer":"Retailer","FirstVendor":"Vendor"}), height=240)
-        st.markdown(f"**New Placements — {b_lbl}**")
-        if pl_cmp.empty: st.caption("None.")
-        else: render_df(pl_cmp[["SKU","Retailer","FirstWeek","Vendor"]].rename(columns={"FirstWeek":"First Week"}), height=240)
-
-    st.markdown("**Lost Activity — sold in compare, zero in current**")
-    if lost.empty: st.caption("None.")
-    else:
-        show_lost = lost[["SKU","Compare_Sales"]].rename(columns={"Compare_Sales":"Compare Sales"}).copy()
-        show_lost["Compare Sales"] = show_lost["Compare Sales"].map(money)
-        render_df(show_lost, height=280)
-
-    st.divider()
-    st.subheader("Comparison Detail")
-    pivot_dim = st.selectbox("Compare rows by", options=["Retailer","Vendor"], index=0, key="multi_compare_dim")
-    comp_a = dfA.groupby(pivot_dim, as_index=False).agg(Sales_A=("Sales","sum"))
-    comp_b = dfB.groupby(pivot_dim, as_index=False).agg(Sales_B=("Sales","sum"))
-    comp = comp_a.merge(comp_b, on=pivot_dim, how="outer").fillna(0.0)
-    comp["Difference"] = comp["Sales_A"] - comp["Sales_B"]
-    comp["% Change"] = np.where(comp["Sales_B"] != 0, comp["Difference"] / comp["Sales_B"], np.nan)
-    comp = comp.sort_values("Sales_A", ascending=False)
-    show = rename_ab_columns(comp.copy(), a_lbl, b_lbl)
-    sales_a_col = f"Sales ({a_lbl})"
-    sales_b_col = f"Sales ({b_lbl})" if b_lbl else "Sales (Comparison)"
-    show[sales_a_col] = show[sales_a_col].map(money)
-    show[sales_b_col] = show[sales_b_col].map(money)
-    show["Difference"] = show["Difference"].map(money)
-    show["% Change"] = show["% Change"].map(pct_fmt)
-    render_df(show[[pivot_dim, sales_a_col, sales_b_col, "Difference", "% Change"]], height=360)
-
-    st.divider()
-    st.subheader("Movers")
-    a = dfA.groupby("SKU", as_index=False).agg(Sales_A=("Sales","sum"))
-    b = dfB.groupby("SKU", as_index=False).agg(Sales_B=("Sales","sum"))
-    m = a.merge(b, on="SKU", how="outer").fillna(0.0)
-    m["Difference"] = m["Sales_A"] - m["Sales_B"]
-    m["% Change"] = np.where(m["Sales_B"] != 0, m["Difference"] / m["Sales_B"], np.nan)
-    m = m[(m["Sales_A"] >= min_sales) | (m["Sales_B"] >= min_sales)].copy()
-    inc = m[m["Difference"] > 0].sort_values("Difference", ascending=False).head(15).copy()
-    dec = m[m["Difference"] < 0].sort_values("Difference", ascending=True).head(15).copy()
-    for ddf in (inc, dec):
-        ddf.rename(columns={"Sales_A": f"Sales ({a_lbl})", "Sales_B": f"Sales ({b_lbl})"}, inplace=True)
-        ddf[f"Sales ({a_lbl})"] = ddf[f"Sales ({a_lbl})"].map(money)
-        ddf[f"Sales ({b_lbl})"] = ddf[f"Sales ({b_lbl})"].map(money)
-        ddf["Difference"] = ddf["Difference"].map(money)
-        ddf["% Change"] = ddf["% Change"].map(pct_fmt)
-    x, y = st.columns(2)
-    with x:
-        st.markdown("**Top Increasing**")
-        if inc.empty: st.caption("None.")
-        else: render_df(inc[["SKU", f"Sales ({a_lbl})", f"Sales ({b_lbl})", "Difference", "% Change"]], height=360)
-    with y:
-        st.markdown("**Top Declining**")
-        if dec.empty: st.caption("None.")
-        else: render_df(dec[["SKU", f"Sales ({a_lbl})", f"Sales ({b_lbl})", "Difference", "% Change"]], height=360)
-else:
-    # original standard view sections
-    st.subheader("New Activity")
-    a,b = st.columns(2)
-    with a:
-        st.markdown("**First Sale Ever (Launches)**")
-        if first_ever.empty:
-            st.caption("None in this period.")
-        else:
-            fe = first_ever.copy()
-            fe["FirstWeek"] = fe["FirstWeek"].dt.date.astype(str)
-            render_df(fe.rename(columns={"FirstWeek":"First Week"})[["SKU","First Week","FirstRetailer","FirstVendor"]], height=260)
-    with b:
-        st.markdown("**New Retailer Placements**")
-        if placements.empty:
-            st.caption("None in this period.")
-        else:
-            pl = placements.copy()
-            pl["FirstWeek"] = pl["FirstWeek"].dt.date.astype(str)
-            render_df(pl.rename(columns={"FirstWeek":"First Week"})[["SKU","Retailer","Vendor","First Week"]], height=260)
-    st.markdown("**New Item Tracker (track launches + placements over the next N weeks)**")
-    track_weeks = st.slider("Tracking window (weeks)", min_value=4, max_value=13, value=8, step=1)
-    def _track_rows() -> pd.DataFrame:
-        rows = []
-        horizon_end_days = 7 * track_weeks - 1
-        if not first_ever.empty:
-            for _, r in first_ever.iterrows():
-                sku = r["SKU"]
-                fw = pd.to_datetime(r["FirstWeek"], errors="coerce")
-                if pd.isna(fw): continue
-                end = fw + pd.Timedelta(days=horizon_end_days)
-                d = df_hist_for_new[(df_hist_for_new["SKU"]==sku) & (df_hist_for_new["WeekEnd"]>=fw) & (df_hist_for_new["WeekEnd"]<=end)].copy()
-                if d.empty: continue
-                wk = d.groupby("WeekEnd", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum")).sort_values("WeekEnd")
-                total_sales = float(wk["Sales"].sum()); total_units = float(wk["Units"].sum())
-                last_sales = float(wk["Sales"].iloc[-1]); prev_sales = float(wk["Sales"].iloc[-2]) if len(wk)>=2 else 0.0
-                rows.append({"Type":"Launch","SKU":sku,"Start Week":fw.date().isoformat(),"Weeks Tracked":int(len(wk)),"Total Sales":total_sales,"Total Units":total_units,"Last Week Sales":last_sales,"WoW Sales Δ":(last_sales - prev_sales) if len(wk)>=2 else np.nan})
-        if not placements.empty:
-            for _, r in placements.iterrows():
-                sku = r["SKU"]; ret = r["Retailer"]; fw = pd.to_datetime(r["FirstWeek"], errors="coerce")
-                if pd.isna(fw): continue
-                end = fw + pd.Timedelta(days=horizon_end_days)
-                d = df_hist_for_new[(df_hist_for_new["SKU"]==sku) & (df_hist_for_new["Retailer"]==ret) & (df_hist_for_new["WeekEnd"]>=fw) & (df_hist_for_new["WeekEnd"]<=end)].copy()
-                if d.empty: continue
-                wk = d.groupby("WeekEnd", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum")).sort_values("WeekEnd")
-                total_sales = float(wk["Sales"].sum()); total_units = float(wk["Units"].sum())
-                last_sales = float(wk["Sales"].iloc[-1]); prev_sales = float(wk["Sales"].iloc[-2]) if len(wk)>=2 else 0.0
-                rows.append({"Type":"Placement","SKU":sku,"Retailer":ret,"Start Week":fw.date().isoformat(),"Weeks Tracked":int(len(wk)),"Total Sales":total_sales,"Total Units":total_units,"Last Week Sales":last_sales,"WoW Sales Δ":(last_sales - prev_sales) if len(wk)>=2 else np.nan})
-        if not rows: return pd.DataFrame(columns=["Type","SKU","Retailer","Start Week","Weeks Tracked","Total Sales","Total Units","Last Week Sales","WoW Sales Δ"])
-        return pd.DataFrame(rows)
-    tracker = _track_rows()
-    if tracker.empty: st.caption("No new items to track in the selected period.")
-    else:
-        show = tracker.copy()
-        for c in ["Total Sales","Last Week Sales","WoW Sales Δ"]: show[c] = show[c].map(lambda v: "" if pd.isna(v) else money(float(v)))
-        show["Total Units"] = show["Total Units"].map(lambda v: f"{float(v):,.0f}")
-        render_df(show.sort_values(["Type","Start Week","SKU"], ascending=[True, False, True]), height=320)
-    st.divider()
-    st.subheader("Weekly Detail (Retailer/Vendor x Weeks)")
-    d = dfA.copy(); d = d[(d["Sales"] >= min_sales) | (d["Units"] >= min_units)].copy()
-    if d.empty: st.caption("No rows match the current thresholds.")
-    else:
-        pivot_dim = st.selectbox("Pivot rows by", options=["Retailer","Vendor"], index=0, key="weekly_pivot_dim")
-        wk_sales = d.groupby([pivot_dim,"WeekEnd"], as_index=False).agg(Sales=("Sales","sum"))
-        wk_sales["WeekEnd"] = pd.to_datetime(wk_sales["WeekEnd"], errors="coerce")
-        weeks = sorted([pd.to_datetime(x) for x in wk_sales["WeekEnd"].dropna().unique().tolist()])
-        wk_sales["Week"] = wk_sales["WeekEnd"].dt.date.astype(str)
-        piv = wk_sales.pivot_table(index=pivot_dim, columns="Week", values="Sales", aggfunc="sum", fill_value=0.0)
-        piv = piv.reindex(sorted(piv.index.tolist()))
-        if len(weeks) >= 2:
-            w_last = str(weeks[-1].date()); w_prev = str(weeks[-2].date()); piv["Δ vs prior week"] = piv.get(w_last, 0.0) - piv.get(w_prev, 0.0)
-        else: piv["Δ vs prior week"] = 0.0
-        piv_disp = piv.copy()
-        for c in piv_disp.columns:
-            if c == "Δ vs prior week": piv_disp[c] = piv_disp[c].map(lambda x: ("+" if x > 0 else "") + money(x))
-            else: piv_disp[c] = piv_disp[c].map(money)
-        piv_disp = piv_disp.reset_index(); render_df(piv_disp, height=320)
-    st.subheader("Movers & Trend Leaders")
-    if compare_mode == "None": st.info("Select a comparison mode to compute increasing/declining vs the compare period.")
-    else:
-        a = dfA.groupby("SKU", as_index=False).agg(Sales_A=("Sales","sum"), Units_A=("Units","sum"))
-        b = dfB.groupby("SKU", as_index=False).agg(Sales_B=("Sales","sum"), Units_B=("Units","sum"))
-        m = a.merge(b, on="SKU", how="outer").fillna(0.0)
-        m["Sales (Current)"] = m["Sales_A"]; m["Sales (Compare)"] = m["Sales_B"]; m["Sales Δ"] = m["Sales_A"] - m["Sales_B"]; m["Δ %"] = np.where(m["Sales_B"] != 0, m["Sales Δ"] / m["Sales_B"], np.nan)
-        m = m[(m["Sales_A"] >= min_sales) | (m["Sales_B"] >= min_sales) | (m["Units_A"] >= min_units) | (m["Units_B"] >= min_units)].copy()
-        inc = m[m["Sales Δ"] > 0].sort_values("Sales Δ", ascending=False).head(10); dec = m[m["Sales Δ"] < 0].sort_values("Sales Δ", ascending=True).head(10)
-        def _fmt_diff(val: float) -> str:
-            color = "#2e7d32" if val > 0 else ("#c62828" if val < 0 else "var(--text-color)"); s = money(val); s = "+" + s if val > 0 else s; return f"<span style='color:{color}'>{s}</span>"
-        def _fmt_pct(val: float) -> str:
-            if pd.isna(val) or val == np.inf or val == -np.inf: return ""
-            color = "#2e7d32" if val > 0 else ("#c62828" if val < 0 else "var(--text-color)"); return f"<span style='color:{color}'>({pct_fmt(val)})</span>"
-        def _disp(df_in: pd.DataFrame) -> pd.DataFrame:
-            if df_in.empty: return df_in
-            out = df_in[["SKU","Sales (Current)","Sales (Compare)","Sales Δ","Δ %"]].copy(); out["Sales (Current)"] = out["Sales (Current)"].map(money); out["Sales (Compare)"] = out["Sales (Compare)"].map(money); out["Sales Δ"] = out["Sales Δ"].map(_fmt_diff); out["Δ %"] = out["Δ %"].map(_fmt_pct); return out
-        inc_disp = _disp(inc); dec_disp = _disp(dec)
-        mom = build_momentum(df_scope[df_scope["WeekEnd"] <= pA.end], "SKU", lookback_weeks=8)
-        if not mom.empty:
-            mom = mom[(mom["Sales (lookback)"] >= min_sales) | (mom["Units (lookback)"] >= min_units)].copy(); trend_leaders = mom.sort_values("Slope", ascending=False).head(10).copy(); trend_leaders_disp = trend_leaders[["SKU","Trend","Slope","Weeks Up","Weeks Down","Sales (lookback)"]].copy(); trend_leaders_disp["Sales (lookback)"] = trend_leaders_disp["Sales (lookback)"].map(money); trend_leaders_disp["Slope"] = trend_leaders_disp["Slope"].map(lambda v: f"{v:,.2f}")
-        else: trend_leaders_disp = pd.DataFrame(columns=["SKU","Trend","Slope","Weeks Up","Weeks Down","Sales (lookback)"])
-        a,b,c = st.columns(3)
-        with a:
-            st.markdown("**Top Increasing**"); st.markdown(inc_disp.to_html(escape=False, index=False, classes='report-table'), unsafe_allow_html=True) if not inc_disp.empty else st.caption("None.")
-        with b:
-            st.markdown("**Top Declining**"); st.markdown(dec_disp.to_html(escape=False, index=False, classes='report-table'), unsafe_allow_html=True) if not dec_disp.empty else st.caption("None.")
-        with c:
-            st.markdown("**Trend Leaders (slope over last 8 weeks)**"); render_df(trend_leaders_disp, height=320)
-
-    st.divider()
-    st.header("Strategic Intelligence")
-
-    # A) Contribution Tree
+    # 1) KPI rows
+    def _new_lost_stats(df_cur: pd.DataFrame, df_cmp: pd.DataFrame):
+        cur_s = df_cur.groupby("SKU", as_index=False).agg(Sales_A=("Sales","sum"))
+        cmp_s = df_cmp.groupby("SKU", as_index=False).agg(Sales_B=("Sales","sum"))
+        m = cur_s.merge(cmp_s, on="SKU", how="outer").fillna(0.0)
+        new_df = m[(m["Sales_A"] > 0) & (m["Sales_B"] <= 0)].copy()
+        lost_df = m[(m["Sales_B"] > 0) & (m["Sales_A"] <= 0)].copy()
+        return new_df, lost_df
     
-    # A) Contribution Tree
-    st.subheader("1) Contribution Tree (Where did change come from?)")
-    if compare_mode == "None":
-        st.info("Select a comparison mode to use the contribution tree.")
+    def _top_entity_in_selection(df_sel: pd.DataFrame, level: str):
+        if df_sel.empty:
+            return None
+        g = df_sel.groupby(level, as_index=False).agg(Sales=("Sales","sum"))
+        if g.empty:
+            return None
+        g = g.sort_values(["Sales", level], ascending=[False, True])
+        r = g.iloc[0]
+        return str(r[level]), float(r["Sales"])
+    
+    def _top_decrease(level: str):
+        a = dfA.groupby(level, as_index=False).agg(Sales_A=("Sales","sum"))
+        b = dfB.groupby(level, as_index=False).agg(Sales_B=("Sales","sum"))
+        m = a.merge(b, on=level, how="outer").fillna(0.0)
+        m["Δ"] = m["Sales_A"] - m["Sales_B"]
+        if m.empty:
+            return None
+        m = m.sort_values("Δ", ascending=True)
+        r = m.iloc[0]
+        return str(r[level]), float(r["Sales_A"]), float(r["Sales_B"])
+    
+    if analysis_view == "Multi Month / Year Compare":
+        c1, c2, c3 = st.columns(3)
+        with c1: kpi_card("Total Sales", money(kA["Sales"]), kdelta("Sales"))
+        with c2: kpi_card("Total Units", f"{kA['Units']:,.0f}", kdelta("Units"))
+        with c3: kpi_card("Avg Selling Price", money(kA["ASP"]), kdelta("ASP"))
+    
+        st.write("")
+        new_df, lost_df = _new_lost_stats(dfA, dfB)
+        new_sales = float(new_df["Sales_A"].sum()) if not new_df.empty else 0.0
+        lost_sales = float(lost_df["Sales_B"].sum()) if not lost_df.empty else 0.0
+        net_count = int(len(new_df) - len(lost_df))
+        net_sales = float(new_sales - lost_sales)
+        net_pct = pct_change(new_sales, lost_sales) if lost_sales != 0 else (np.nan if new_sales == 0 else np.inf)
+    
+        n1, n2, n3 = st.columns(3)
+        with n1: count_sales_card("New SKUs", int(len(new_df)), new_sales, color="#2e7d32", signed_sales=True)
+        with n2: count_sales_card("Lost SKUs", int(len(lost_df)), -lost_sales, color="#c62828", signed_sales=True)
+        with n3: count_sales_card("Net New vs Lost", net_count, net_sales, color=("#2e7d32" if net_sales > 0 else ("#c62828" if net_sales < 0 else "var(--text-color)")), signed_sales=True, pct=net_pct)
+    
+        st.write("")
+        s1, s2, s3, s4, s5, s6 = st.columns(6)
+        trA = _top_entity_in_selection(dfA, "Retailer")
+        trB = _top_entity_in_selection(dfB, "Retailer")
+        tvA = _top_entity_in_selection(dfA, "Vendor")
+        tvB = _top_entity_in_selection(dfB, "Vendor")
+        with s1: selection_total_card(f"{a_lbl} Total", kA["Sales"], kA["Units"])
+        with s2: selection_total_card(f"{b_lbl} Total", kB["Sales"], kB["Units"])
+        with s3:
+            if trA: leader_sales_card(f"Top Retailer ({a_lbl})", trA[0], trA[1], 0.0)
+        with s4:
+            if trB: leader_sales_card(f"Top Retailer ({b_lbl})", trB[0], trB[1], 0.0)
+        with s5:
+            if tvA: leader_sales_card(f"Top Vendor ({a_lbl})", tvA[0], tvA[1], 0.0)
+        with s6:
+            if tvB: leader_sales_card(f"Top Vendor ({b_lbl})", tvB[0], tvB[1], 0.0)
+    
+        st.write("")
+        t1, t2, t3, t4, t5, t6 = st.columns(6)
+        tsA = _top_entity_in_selection(dfA, "SKU")
+        tsB = _top_entity_in_selection(dfB, "SKU")
+        iR = _top_by_increase("Retailer")
+        iV = _top_by_increase("Vendor")
+        iS = _top_by_increase("SKU")
+        with t1:
+            if tsA: leader_sales_card(f"Top SKU ({a_lbl})", tsA[0], tsA[1], 0.0)
+        with t2:
+            if tsB: leader_sales_card(f"Top SKU ({b_lbl})", tsB[0], tsB[1], 0.0)
+        with t3:
+            if iR: biggest_increase_card("Retailer w/ Biggest Increase", iR[0], iR[1], iR[2])
+        with t4:
+            if iV: biggest_increase_card("Vendor w/ Biggest Increase", iV[0], iV[1], iV[2])
+        with t5:
+            if iS: biggest_increase_card("SKU w/ Biggest Increase", iS[0], iS[1], iS[2])
+        with t6:
+            st.empty()
+    
+        st.write("")
+        d1, d2, d3 = st.columns(3)
+        decR = _top_decrease("Retailer")
+        decV = _top_decrease("Vendor")
+        decS = _top_decrease("SKU")
+        with d1:
+            if decR: biggest_increase_card("Retailer w/ Biggest Decrease", decR[0], decR[1], decR[2])
+        with d2:
+            if decV: biggest_increase_card("Vendor w/ Biggest Decrease", decV[0], decV[1], decV[2])
+        with d3:
+            if decS: biggest_increase_card("SKU w/ Biggest Decrease", decS[0], decS[1], decS[2])
     else:
+        c1,c2,c3,c4,c5,c6 = st.columns(6)
+        with c1: kpi_card("Total Sales", money(kA["Sales"]), kdelta("Sales"))
+        with c2: kpi_card("Total Units", f"{kA['Units']:,.0f}", kdelta("Units"))
+        with c3: kpi_card("Avg Selling Price", money(kA["ASP"]), kdelta("ASP"))
+        with c4: kpi_card("Active SKUs", f"{kA['Active SKUs']:,}", kdelta("Active SKUs"))
+        with c5: kpi_card("First Sales", f"{len(first_ever):,}" , "")
+        with c6: kpi_card("New Placements", f"{len(placements):,}", "")
+    
+        st.write("")
+        r1c1, r1c2, r1c3 = st.columns(3)
+        tR = _top_by_current("Retailer")
+        tV = _top_by_current("Vendor")
+        tS = _top_by_current("SKU")
+        with r1c1:
+            if tR: leader_sales_card("Top Retailer (Sales)", tR[0], tR[1], tR[2])
+        with r1c2:
+            if tV: leader_sales_card("Top Vendor (Sales)", tV[0], tV[1], tV[2])
+        with r1c3:
+            if tS: leader_sales_card("Top SKU (Sales)", tS[0], tS[1], tS[2])
+    
+        r2c1, r2c2, r2c3 = st.columns(3)
+        iR = _top_by_increase("Retailer")
+        iV = _top_by_increase("Vendor")
+        iS = _top_by_increase("SKU")
+        with r2c1:
+            if iR: biggest_increase_card("Retailer w/ Biggest Increase", iR[0], iR[1], iR[2])
+        with r2c2:
+            if iV: biggest_increase_card("Vendor w/ Biggest Increase", iV[0], iV[1], iV[2])
+        with r2c3:
+            if iS: biggest_increase_card("SKU w/ Biggest Increase", iS[0], iS[1], iS[2])
+    
+        st.write("")
+        # 2) Drivers (two tables)
+        st.subheader("Drivers (Contribution to change)")
+        if compare_mode == "None":
+            st.info("Select a comparison mode to compute drivers.")
+        else:
+            drv_show = drv.copy()
+            drv_show = drv_show[(drv_show["Sales_A"] >= min_sales) | (drv_show["Sales_B"] >= min_sales)]
+            pos = drv_show[drv_show["Sales_Δ"] > 0].head(10).copy()
+            neg = drv_show[drv_show["Sales_Δ"] < 0].sort_values("Sales_Δ").head(10).copy()
+    
+            for d in (pos, neg):
+                d["Sales_A"] = d["Sales_A"].map(money)
+                d["Sales_B"] = d["Sales_B"].map(money)
+                d["Sales_Δ"] = d["Sales_Δ"].map(lambda v: f"{money(v)}")
+                d["Contribution_%"] = d["Contribution_%"].map(pct_fmt)
+    
+            left,right = st.columns(2)
+    
+            # Rename A/B columns for clearer display
+            pos_disp = rename_ab_columns(pos, a_lbl, b_lbl)
+            neg_disp = rename_ab_columns(neg, a_lbl, b_lbl)
+            sales_a_col = f"Sales ({a_lbl})"
+            sales_b_col = f"Sales ({b_lbl})" if b_lbl else "Sales (Comparison)"
+    
+            with left:
+                st.markdown("**Top Positive Contributors**")
+                render_df(pos_disp[[driver_level, sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=320)
+            with right:
+                st.markdown("**Top Negative Contributors**")
+                render_df(neg_disp[[driver_level, sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=320)
+    
+    st.divider()
+    
+    if analysis_view == "Multi Month / Year Compare":
+        st.subheader("New Activity")
+        fe_cur = first_sale_ever(df_hist_for_new, pA)
+        fe_cmp = first_sale_ever(df_hist_for_new, pB) if pB is not None else pd.DataFrame()
+        pl_cur = new_placement(df_hist_for_new, pA)
+        pl_cmp = new_placement(df_hist_for_new, pB) if pB is not None else pd.DataFrame()
+        cur_s = dfA.groupby("SKU", as_index=False).agg(Current_Sales=("Sales","sum"))
+        cmp_s = dfB.groupby("SKU", as_index=False).agg(Compare_Sales=("Sales","sum"))
+        lost = cmp_s.merge(cur_s, on="SKU", how="left").fillna(0.0)
+        lost = lost[(lost["Compare_Sales"] > 0) & (lost["Current_Sales"] <= 0)].copy().sort_values("Compare_Sales", ascending=False)
+    
+        a1, a2 = st.columns(2)
+        with a1:
+            st.markdown(f"**First Ever Sales — {a_lbl}**")
+            if fe_cur.empty: st.caption("None.")
+            else: render_df(fe_cur[["SKU","FirstWeek","FirstRetailer","FirstVendor"]].rename(columns={"FirstWeek":"First Week","FirstRetailer":"Retailer","FirstVendor":"Vendor"}), height=240)
+            st.markdown(f"**New Placements — {a_lbl}**")
+            if pl_cur.empty: st.caption("None.")
+            else: render_df(pl_cur[["SKU","Retailer","FirstWeek","Vendor"]].rename(columns={"FirstWeek":"First Week"}), height=240)
+        with a2:
+            st.markdown(f"**First Ever Sales — {b_lbl}**")
+            if fe_cmp.empty: st.caption("None.")
+            else: render_df(fe_cmp[["SKU","FirstWeek","FirstRetailer","FirstVendor"]].rename(columns={"FirstWeek":"First Week","FirstRetailer":"Retailer","FirstVendor":"Vendor"}), height=240)
+            st.markdown(f"**New Placements — {b_lbl}**")
+            if pl_cmp.empty: st.caption("None.")
+            else: render_df(pl_cmp[["SKU","Retailer","FirstWeek","Vendor"]].rename(columns={"FirstWeek":"First Week"}), height=240)
+    
+        st.markdown("**Lost Activity — sold in compare, zero in current**")
+        if lost.empty: st.caption("None.")
+        else:
+            show_lost = lost[["SKU","Compare_Sales"]].rename(columns={"Compare_Sales":"Compare Sales"}).copy()
+            show_lost["Compare Sales"] = show_lost["Compare Sales"].map(money)
+            render_df(show_lost, height=280)
+    
+        st.divider()
+        st.subheader("Comparison Detail")
+        pivot_dim = st.selectbox("Compare rows by", options=["Retailer","Vendor"], index=0, key="multi_compare_dim")
+        comp_a = dfA.groupby(pivot_dim, as_index=False).agg(Sales_A=("Sales","sum"))
+        comp_b = dfB.groupby(pivot_dim, as_index=False).agg(Sales_B=("Sales","sum"))
+        comp = comp_a.merge(comp_b, on=pivot_dim, how="outer").fillna(0.0)
+        comp["Difference"] = comp["Sales_A"] - comp["Sales_B"]
+        comp["% Change"] = np.where(comp["Sales_B"] != 0, comp["Difference"] / comp["Sales_B"], np.nan)
+        comp = comp.sort_values("Sales_A", ascending=False)
+        show = rename_ab_columns(comp.copy(), a_lbl, b_lbl)
         sales_a_col = f"Sales ({a_lbl})"
         sales_b_col = f"Sales ({b_lbl})" if b_lbl else "Sales (Comparison)"
-
-        # Level 1: Retailers
-        lvl1 = drivers(dfA, dfB, "Retailer").sort_values("Sales_Δ", ascending=False)
-        st.markdown("**Level 1 — Retailers**")
-        lvl1_disp = lvl1[["Retailer","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
-        lvl1_disp["Sales_A"] = lvl1_disp["Sales_A"].map(money)
-        lvl1_disp["Sales_B"] = lvl1_disp["Sales_B"].map(money)
-        lvl1_disp["Sales_Δ"] = lvl1_disp["Sales_Δ"].map(money)
-        lvl1_disp["Contribution_%"] = lvl1_disp["Contribution_%"].map(pct_fmt)
-        lvl1_disp = rename_ab_columns(lvl1_disp, a_lbl, b_lbl)
-        render_df(lvl1_disp[["Retailer", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=260)
-
-        pick_r = st.selectbox("Drill into Retailer", options=["(none)"] + sorted(lvl1["Retailer"].astype(str).tolist()), index=0)
-        if pick_r != "(none)":
-            dfA_r = dfA[dfA["Retailer"] == pick_r].copy()
-            dfB_r = dfB[dfB["Retailer"] == pick_r].copy()
-
-            lvl2 = drivers(dfA_r, dfB_r, "Vendor").sort_values("Sales_Δ", ascending=False)
-            st.markdown(f"**Level 2 — Vendors inside {pick_r}**")
-            lvl2_disp = lvl2[["Vendor","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
-            lvl2_disp["Sales_A"] = lvl2_disp["Sales_A"].map(money)
-            lvl2_disp["Sales_B"] = lvl2_disp["Sales_B"].map(money)
-            lvl2_disp["Sales_Δ"] = lvl2_disp["Sales_Δ"].map(money)
-            lvl2_disp["Contribution_%"] = lvl2_disp["Contribution_%"].map(pct_fmt)
-            lvl2_disp = rename_ab_columns(lvl2_disp, a_lbl, b_lbl)
-            render_df(lvl2_disp[["Vendor", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
-
-            pick_v = st.selectbox("Drill into Vendor", options=["(none)"] + sorted(lvl2["Vendor"].astype(str).tolist()), index=0)
-            if pick_v != "(none)":
-                dfA_v = dfA_r[dfA_r["Vendor"] == pick_v].copy()
-                dfB_v = dfB_r[dfB_r["Vendor"] == pick_v].copy()
-
-                lvl3 = drivers(dfA_v, dfB_v, "SKU").sort_values("Sales_Δ", ascending=False)
-                st.markdown(f"**Level 3 — SKUs inside {pick_r} → {pick_v}**")
-                lvl3_disp = lvl3[["SKU","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
-                lvl3_disp["Sales_A"] = lvl3_disp["Sales_A"].map(money)
-                lvl3_disp["Sales_B"] = lvl3_disp["Sales_B"].map(money)
-                lvl3_disp["Sales_Δ"] = lvl3_disp["Sales_Δ"].map(money)
-                lvl3_disp["Contribution_%"] = lvl3_disp["Contribution_%"].map(pct_fmt)
-                lvl3_disp = rename_ab_columns(lvl3_disp, a_lbl, b_lbl)
-                render_df(lvl3_disp[["SKU", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
-    st.subheader("2) SKU Lifecycle (Launch → Growth → Mature → Decline → Dormant)")
-    life_df_src = df_hist_for_new if show_full_history_lifecycle else df_scope
-    life = lifecycle_table(life_df_src, pA, lookback_weeks=8)
-    if life.empty:
-        st.caption("Not enough data to compute lifecycle.")
+        show[sales_a_col] = show[sales_a_col].map(money)
+        show[sales_b_col] = show[sales_b_col].map(money)
+        show["Difference"] = show["Difference"].map(money)
+        show["% Change"] = show["% Change"].map(pct_fmt)
+        render_df(show[[pivot_dim, sales_a_col, sales_b_col, "Difference", "% Change"]], height=360)
+    
+        st.divider()
+        st.subheader("Movers")
+        a = dfA.groupby("SKU", as_index=False).agg(Sales_A=("Sales","sum"))
+        b = dfB.groupby("SKU", as_index=False).agg(Sales_B=("Sales","sum"))
+        m = a.merge(b, on="SKU", how="outer").fillna(0.0)
+        m["Difference"] = m["Sales_A"] - m["Sales_B"]
+        m["% Change"] = np.where(m["Sales_B"] != 0, m["Difference"] / m["Sales_B"], np.nan)
+        m = m[(m["Sales_A"] >= min_sales) | (m["Sales_B"] >= min_sales)].copy()
+        inc = m[m["Difference"] > 0].sort_values("Difference", ascending=False).head(15).copy()
+        dec = m[m["Difference"] < 0].sort_values("Difference", ascending=True).head(15).copy()
+        for ddf in (inc, dec):
+            ddf.rename(columns={"Sales_A": f"Sales ({a_lbl})", "Sales_B": f"Sales ({b_lbl})"}, inplace=True)
+            ddf[f"Sales ({a_lbl})"] = ddf[f"Sales ({a_lbl})"].map(money)
+            ddf[f"Sales ({b_lbl})"] = ddf[f"Sales ({b_lbl})"].map(money)
+            ddf["Difference"] = ddf["Difference"].map(money)
+            ddf["% Change"] = ddf["% Change"].map(pct_fmt)
+        x, y = st.columns(2)
+        with x:
+            st.markdown("**Top Increasing**")
+            if inc.empty: st.caption("None.")
+            else: render_df(inc[["SKU", f"Sales ({a_lbl})", f"Sales ({b_lbl})", "Difference", "% Change"]], height=360)
+        with y:
+            st.markdown("**Top Declining**")
+            if dec.empty: st.caption("None.")
+            else: render_df(dec[["SKU", f"Sales ({a_lbl})", f"Sales ({b_lbl})", "Difference", "% Change"]], height=360)
     else:
-        # small stage summary
-        stage_counts = life["Stage"].value_counts().reset_index()
-        stage_counts.columns = ["Stage","Count"]
-        left,right = st.columns([1,2])
-        with left:
-            st.markdown("**Stage Summary**")
-            render_df(stage_counts, height=220)
-        with right:
-            st.markdown("**Lifecycle Detail (trend + momentum + recent change)**")
-            life_show = life.copy()
-            if min_sales > 0:
-                life_show = life_show[life_show["Sales (lookback)"] >= min_sales].copy()
-
-            # Pretty formatting
-            life_show["Sales (lookback)"] = life_show["Sales (lookback)"].map(money)
-            life_show["Units (lookback)"] = life_show["Units (lookback)"].map(lambda v: f"{v:,.0f}")
-            life_show["Last Week Sales"] = life_show["Last Week Sales"].map(money)
-            life_show["WoW Sales Δ"] = life_show["WoW Sales Δ"].map(lambda v: "" if pd.isna(v) else money(v))
-            life_show["Slope"] = life_show["Slope"].map(lambda v: f"{v:,.2f}") if "Slope" in life_show.columns else life_show.get("Slope")
-            for dc in ["First Sale","Last Sale"]:
-                if dc in life_show.columns:
-                    life_show[dc] = pd.to_datetime(life_show[dc], errors="coerce").dt.date.astype(str)
-
-            cols = [
-                "SKU","Stage","Trend","Momentum",
-                "Sales (lookback)","Units (lookback)",
-                "Last Week Sales","WoW Sales Δ",
-                "Slope","Weeks Up","Weeks Down","First Sale","Last Sale",
-            ]
-            cols = [c for c in cols if c in life_show.columns]
-            render_df(life_show[cols].head(60), height=520)
-
-    st.divider()
-
-    # C) Opportunity Detector
-    st.subheader("3) Opportunity Detector (Find expansion + gaps)")
-    if compare_mode == "None":
-        st.info("Select a comparison mode to power opportunity signals (needs a comparison).")
-    else:
-        opp = opportunity_detector(df_hist_for_new, dfA, dfB, pA)
-        tabs = st.tabs(list(opp.keys()))
-        for t, (name, odf) in zip(tabs, opp.items()):
-            with t:
-                if odf.empty:
-                    st.caption("No signals found with current filters/thresholds.")
-                else:
-                    render_df(odf, height=420)
-
-    # Footer
-    st.caption("Tip: Use Scope + Driver Level together. Example: Scope=Retailer (Depot), Driver Level=Vendor to see which vendors drove Depot’s change.")
+        # original standard view sections
+        st.subheader("New Activity")
+        a,b = st.columns(2)
+        with a:
+            st.markdown("**First Sale Ever (Launches)**")
+            if first_ever.empty:
+                st.caption("None in this period.")
+            else:
+                fe = first_ever.copy()
+                fe["FirstWeek"] = fe["FirstWeek"].dt.date.astype(str)
+                render_df(fe.rename(columns={"FirstWeek":"First Week"})[["SKU","First Week","FirstRetailer","FirstVendor"]], height=260)
+        with b:
+            st.markdown("**New Retailer Placements**")
+            if placements.empty:
+                st.caption("None in this period.")
+            else:
+                pl = placements.copy()
+                pl["FirstWeek"] = pl["FirstWeek"].dt.date.astype(str)
+                render_df(pl.rename(columns={"FirstWeek":"First Week"})[["SKU","Retailer","Vendor","First Week"]], height=260)
+        st.markdown("**New Item Tracker (track launches + placements over the next N weeks)**")
+        track_weeks = st.slider("Tracking window (weeks)", min_value=4, max_value=13, value=8, step=1)
+        def _track_rows() -> pd.DataFrame:
+            rows = []
+            horizon_end_days = 7 * track_weeks - 1
+            if not first_ever.empty:
+                for _, r in first_ever.iterrows():
+                    sku = r["SKU"]
+                    fw = pd.to_datetime(r["FirstWeek"], errors="coerce")
+                    if pd.isna(fw): continue
+                    end = fw + pd.Timedelta(days=horizon_end_days)
+                    d = df_hist_for_new[(df_hist_for_new["SKU"]==sku) & (df_hist_for_new["WeekEnd"]>=fw) & (df_hist_for_new["WeekEnd"]<=end)].copy()
+                    if d.empty: continue
+                    wk = d.groupby("WeekEnd", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum")).sort_values("WeekEnd")
+                    total_sales = float(wk["Sales"].sum()); total_units = float(wk["Units"].sum())
+                    last_sales = float(wk["Sales"].iloc[-1]); prev_sales = float(wk["Sales"].iloc[-2]) if len(wk)>=2 else 0.0
+                    rows.append({"Type":"Launch","SKU":sku,"Start Week":fw.date().isoformat(),"Weeks Tracked":int(len(wk)),"Total Sales":total_sales,"Total Units":total_units,"Last Week Sales":last_sales,"WoW Sales Δ":(last_sales - prev_sales) if len(wk)>=2 else np.nan})
+            if not placements.empty:
+                for _, r in placements.iterrows():
+                    sku = r["SKU"]; ret = r["Retailer"]; fw = pd.to_datetime(r["FirstWeek"], errors="coerce")
+                    if pd.isna(fw): continue
+                    end = fw + pd.Timedelta(days=horizon_end_days)
+                    d = df_hist_for_new[(df_hist_for_new["SKU"]==sku) & (df_hist_for_new["Retailer"]==ret) & (df_hist_for_new["WeekEnd"]>=fw) & (df_hist_for_new["WeekEnd"]<=end)].copy()
+                    if d.empty: continue
+                    wk = d.groupby("WeekEnd", as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum")).sort_values("WeekEnd")
+                    total_sales = float(wk["Sales"].sum()); total_units = float(wk["Units"].sum())
+                    last_sales = float(wk["Sales"].iloc[-1]); prev_sales = float(wk["Sales"].iloc[-2]) if len(wk)>=2 else 0.0
+                    rows.append({"Type":"Placement","SKU":sku,"Retailer":ret,"Start Week":fw.date().isoformat(),"Weeks Tracked":int(len(wk)),"Total Sales":total_sales,"Total Units":total_units,"Last Week Sales":last_sales,"WoW Sales Δ":(last_sales - prev_sales) if len(wk)>=2 else np.nan})
+            if not rows: return pd.DataFrame(columns=["Type","SKU","Retailer","Start Week","Weeks Tracked","Total Sales","Total Units","Last Week Sales","WoW Sales Δ"])
+            return pd.DataFrame(rows)
+        tracker = _track_rows()
+        if tracker.empty: st.caption("No new items to track in the selected period.")
+        else:
+            show = tracker.copy()
+            for c in ["Total Sales","Last Week Sales","WoW Sales Δ"]: show[c] = show[c].map(lambda v: "" if pd.isna(v) else money(float(v)))
+            show["Total Units"] = show["Total Units"].map(lambda v: f"{float(v):,.0f}")
+            render_df(show.sort_values(["Type","Start Week","SKU"], ascending=[True, False, True]), height=320)
+        st.divider()
+        st.subheader("Weekly Detail (Retailer/Vendor x Weeks)")
+        d = dfA.copy(); d = d[(d["Sales"] >= min_sales) | (d["Units"] >= min_units)].copy()
+        if d.empty: st.caption("No rows match the current thresholds.")
+        else:
+            pivot_dim = st.selectbox("Pivot rows by", options=["Retailer","Vendor"], index=0, key="weekly_pivot_dim")
+            wk_sales = d.groupby([pivot_dim,"WeekEnd"], as_index=False).agg(Sales=("Sales","sum"))
+            wk_sales["WeekEnd"] = pd.to_datetime(wk_sales["WeekEnd"], errors="coerce")
+            weeks = sorted([pd.to_datetime(x) for x in wk_sales["WeekEnd"].dropna().unique().tolist()])
+            wk_sales["Week"] = wk_sales["WeekEnd"].dt.date.astype(str)
+            piv = wk_sales.pivot_table(index=pivot_dim, columns="Week", values="Sales", aggfunc="sum", fill_value=0.0)
+            piv = piv.reindex(sorted(piv.index.tolist()))
+            if len(weeks) >= 2:
+                w_last = str(weeks[-1].date()); w_prev = str(weeks[-2].date()); piv["Δ vs prior week"] = piv.get(w_last, 0.0) - piv.get(w_prev, 0.0)
+            else: piv["Δ vs prior week"] = 0.0
+            piv_disp = piv.copy()
+            for c in piv_disp.columns:
+                if c == "Δ vs prior week": piv_disp[c] = piv_disp[c].map(lambda x: ("+" if x > 0 else "") + money(x))
+                else: piv_disp[c] = piv_disp[c].map(money)
+            piv_disp = piv_disp.reset_index(); render_df(piv_disp, height=320)
+        st.subheader("Movers & Trend Leaders")
+        if compare_mode == "None": st.info("Select a comparison mode to compute increasing/declining vs the compare period.")
+        else:
+            a = dfA.groupby("SKU", as_index=False).agg(Sales_A=("Sales","sum"), Units_A=("Units","sum"))
+            b = dfB.groupby("SKU", as_index=False).agg(Sales_B=("Sales","sum"), Units_B=("Units","sum"))
+            m = a.merge(b, on="SKU", how="outer").fillna(0.0)
+            m["Sales (Current)"] = m["Sales_A"]; m["Sales (Compare)"] = m["Sales_B"]; m["Sales Δ"] = m["Sales_A"] - m["Sales_B"]; m["Δ %"] = np.where(m["Sales_B"] != 0, m["Sales Δ"] / m["Sales_B"], np.nan)
+            m = m[(m["Sales_A"] >= min_sales) | (m["Sales_B"] >= min_sales) | (m["Units_A"] >= min_units) | (m["Units_B"] >= min_units)].copy()
+            inc = m[m["Sales Δ"] > 0].sort_values("Sales Δ", ascending=False).head(10); dec = m[m["Sales Δ"] < 0].sort_values("Sales Δ", ascending=True).head(10)
+            def _fmt_diff(val: float) -> str:
+                color = "#2e7d32" if val > 0 else ("#c62828" if val < 0 else "var(--text-color)"); s = money(val); s = "+" + s if val > 0 else s; return f"<span style='color:{color}'>{s}</span>"
+            def _fmt_pct(val: float) -> str:
+                if pd.isna(val) or val == np.inf or val == -np.inf: return ""
+                color = "#2e7d32" if val > 0 else ("#c62828" if val < 0 else "var(--text-color)"); return f"<span style='color:{color}'>({pct_fmt(val)})</span>"
+            def _disp(df_in: pd.DataFrame) -> pd.DataFrame:
+                if df_in.empty: return df_in
+                out = df_in[["SKU","Sales (Current)","Sales (Compare)","Sales Δ","Δ %"]].copy(); out["Sales (Current)"] = out["Sales (Current)"].map(money); out["Sales (Compare)"] = out["Sales (Compare)"].map(money); out["Sales Δ"] = out["Sales Δ"].map(_fmt_diff); out["Δ %"] = out["Δ %"].map(_fmt_pct); return out
+            inc_disp = _disp(inc); dec_disp = _disp(dec)
+            mom = build_momentum(df_scope[df_scope["WeekEnd"] <= pA.end], "SKU", lookback_weeks=8)
+            if not mom.empty:
+                mom = mom[(mom["Sales (lookback)"] >= min_sales) | (mom["Units (lookback)"] >= min_units)].copy(); trend_leaders = mom.sort_values("Slope", ascending=False).head(10).copy(); trend_leaders_disp = trend_leaders[["SKU","Trend","Slope","Weeks Up","Weeks Down","Sales (lookback)"]].copy(); trend_leaders_disp["Sales (lookback)"] = trend_leaders_disp["Sales (lookback)"].map(money); trend_leaders_disp["Slope"] = trend_leaders_disp["Slope"].map(lambda v: f"{v:,.2f}")
+            else: trend_leaders_disp = pd.DataFrame(columns=["SKU","Trend","Slope","Weeks Up","Weeks Down","Sales (lookback)"])
+            a,b,c = st.columns(3)
+            with a:
+                st.markdown("**Top Increasing**"); st.markdown(inc_disp.to_html(escape=False, index=False, classes='report-table'), unsafe_allow_html=True) if not inc_disp.empty else st.caption("None.")
+            with b:
+                st.markdown("**Top Declining**"); st.markdown(dec_disp.to_html(escape=False, index=False, classes='report-table'), unsafe_allow_html=True) if not dec_disp.empty else st.caption("None.")
+            with c:
+                st.markdown("**Trend Leaders (slope over last 8 weeks)**"); render_df(trend_leaders_disp, height=320)
+    
+        st.divider()
+        st.header("Strategic Intelligence")
+    
+        # A) Contribution Tree
+        
+        # A) Contribution Tree
+        st.subheader("1) Contribution Tree (Where did change come from?)")
+        if compare_mode == "None":
+            st.info("Select a comparison mode to use the contribution tree.")
+        else:
+            sales_a_col = f"Sales ({a_lbl})"
+            sales_b_col = f"Sales ({b_lbl})" if b_lbl else "Sales (Comparison)"
+    
+            # Level 1: Retailers
+            lvl1 = drivers(dfA, dfB, "Retailer").sort_values("Sales_Δ", ascending=False)
+            st.markdown("**Level 1 — Retailers**")
+            lvl1_disp = lvl1[["Retailer","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
+            lvl1_disp["Sales_A"] = lvl1_disp["Sales_A"].map(money)
+            lvl1_disp["Sales_B"] = lvl1_disp["Sales_B"].map(money)
+            lvl1_disp["Sales_Δ"] = lvl1_disp["Sales_Δ"].map(money)
+            lvl1_disp["Contribution_%"] = lvl1_disp["Contribution_%"].map(pct_fmt)
+            lvl1_disp = rename_ab_columns(lvl1_disp, a_lbl, b_lbl)
+            render_df(lvl1_disp[["Retailer", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=260)
+    
+            pick_r = st.selectbox("Drill into Retailer", options=["(none)"] + sorted(lvl1["Retailer"].astype(str).tolist()), index=0)
+            if pick_r != "(none)":
+                dfA_r = dfA[dfA["Retailer"] == pick_r].copy()
+                dfB_r = dfB[dfB["Retailer"] == pick_r].copy()
+    
+                lvl2 = drivers(dfA_r, dfB_r, "Vendor").sort_values("Sales_Δ", ascending=False)
+                st.markdown(f"**Level 2 — Vendors inside {pick_r}**")
+                lvl2_disp = lvl2[["Vendor","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
+                lvl2_disp["Sales_A"] = lvl2_disp["Sales_A"].map(money)
+                lvl2_disp["Sales_B"] = lvl2_disp["Sales_B"].map(money)
+                lvl2_disp["Sales_Δ"] = lvl2_disp["Sales_Δ"].map(money)
+                lvl2_disp["Contribution_%"] = lvl2_disp["Contribution_%"].map(pct_fmt)
+                lvl2_disp = rename_ab_columns(lvl2_disp, a_lbl, b_lbl)
+                render_df(lvl2_disp[["Vendor", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
+    
+                pick_v = st.selectbox("Drill into Vendor", options=["(none)"] + sorted(lvl2["Vendor"].astype(str).tolist()), index=0)
+                if pick_v != "(none)":
+                    dfA_v = dfA_r[dfA_r["Vendor"] == pick_v].copy()
+                    dfB_v = dfB_r[dfB_r["Vendor"] == pick_v].copy()
+    
+                    lvl3 = drivers(dfA_v, dfB_v, "SKU").sort_values("Sales_Δ", ascending=False)
+                    st.markdown(f"**Level 3 — SKUs inside {pick_r} → {pick_v}**")
+                    lvl3_disp = lvl3[["SKU","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
+                    lvl3_disp["Sales_A"] = lvl3_disp["Sales_A"].map(money)
+                    lvl3_disp["Sales_B"] = lvl3_disp["Sales_B"].map(money)
+                    lvl3_disp["Sales_Δ"] = lvl3_disp["Sales_Δ"].map(money)
+                    lvl3_disp["Contribution_%"] = lvl3_disp["Contribution_%"].map(pct_fmt)
+                    lvl3_disp = rename_ab_columns(lvl3_disp, a_lbl, b_lbl)
+                    render_df(lvl3_disp[["SKU", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
+        st.subheader("2) SKU Lifecycle (Launch → Growth → Mature → Decline → Dormant)")
+        life_df_src = df_hist_for_new if show_full_history_lifecycle else df_scope
+        life = lifecycle_table(life_df_src, pA, lookback_weeks=8)
+        if life.empty:
+            st.caption("Not enough data to compute lifecycle.")
+        else:
+            # small stage summary
+            stage_counts = life["Stage"].value_counts().reset_index()
+            stage_counts.columns = ["Stage","Count"]
+            left,right = st.columns([1,2])
+            with left:
+                st.markdown("**Stage Summary**")
+                render_df(stage_counts, height=220)
+            with right:
+                st.markdown("**Lifecycle Detail (trend + momentum + recent change)**")
+                life_show = life.copy()
+                if min_sales > 0:
+                    life_show = life_show[life_show["Sales (lookback)"] >= min_sales].copy()
+    
+                # Pretty formatting
+                life_show["Sales (lookback)"] = life_show["Sales (lookback)"].map(money)
+                life_show["Units (lookback)"] = life_show["Units (lookback)"].map(lambda v: f"{v:,.0f}")
+                life_show["Last Week Sales"] = life_show["Last Week Sales"].map(money)
+                life_show["WoW Sales Δ"] = life_show["WoW Sales Δ"].map(lambda v: "" if pd.isna(v) else money(v))
+                life_show["Slope"] = life_show["Slope"].map(lambda v: f"{v:,.2f}") if "Slope" in life_show.columns else life_show.get("Slope")
+                for dc in ["First Sale","Last Sale"]:
+                    if dc in life_show.columns:
+                        life_show[dc] = pd.to_datetime(life_show[dc], errors="coerce").dt.date.astype(str)
+    
+                cols = [
+                    "SKU","Stage","Trend","Momentum",
+                    "Sales (lookback)","Units (lookback)",
+                    "Last Week Sales","WoW Sales Δ",
+                    "Slope","Weeks Up","Weeks Down","First Sale","Last Sale",
+                ]
+                cols = [c for c in cols if c in life_show.columns]
+                render_df(life_show[cols].head(60), height=520)
+    
+        st.divider()
+    
+        # C) Opportunity Detector
+        st.subheader("3) Opportunity Detector (Find expansion + gaps)")
+        if compare_mode == "None":
+            st.info("Select a comparison mode to power opportunity signals (needs a comparison).")
+        else:
+            opp = opportunity_detector(df_hist_for_new, dfA, dfB, pA)
+            tabs = st.tabs(list(opp.keys()))
+            for t, (name, odf) in zip(tabs, opp.items()):
+                with t:
+                    if odf.empty:
+                        st.caption("No signals found with current filters/thresholds.")
+                    else:
+                        render_df(odf, height=420)
+    
+        # Footer
+        st.caption("Tip: Use Scope + Driver Level together. Example: Scope=Retailer (Depot), Driver Level=Vendor to see which vendors drove Depot’s change.")
