@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import html
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -874,30 +875,6 @@ def run_app():
                 f"{note_html}"
             )
 
-        st.markdown("### Leaders")
-        r1c1, r1c2, r1c3 = st.columns(3)
-        tR = _top_by_current("Retailer")
-        tV = _top_by_current("Vendor")
-        tS = _top_by_current("SKU")
-        with r1c1:
-            if tR: kpi_card("Top Retailer (Sales)", tR[0], _delta_html(tR[1], tR[2], is_money=True, note=""))
-        with r1c2:
-            if tV: kpi_card("Top Vendor (Sales)", tV[0], _delta_html(tV[1], tV[2], is_money=True, note=""))
-        with r1c3:
-            if tS: kpi_card("Top SKU (Sales)", tS[0], _delta_html(tS[1], tS[2], is_money=True, note=""))
-
-        st.markdown("### Biggest Increases")
-        r2c1, r2c2, r2c3 = st.columns(3)
-        iR = _top_by_increase("Retailer")
-        iV = _top_by_increase("Vendor")
-        iS = _top_by_increase("SKU")
-        with r2c1:
-            if iR: kpi_card("Retailer w/ Biggest Increase", iR[0], _delta_html(iR[1], iR[2], is_money=True, note=""))
-        with r2c2:
-            if iV: kpi_card("Vendor w/ Biggest Increase", iV[0], _delta_html(iV[1], iV[2], is_money=True, note=""))
-        with r2c3:
-            if iS: kpi_card("SKU w/ Biggest Increase", iS[0], _delta_html(iS[1], iS[2], is_money=True, note=""))
-
 # 0) Intelligence summary
     sales_delta = kA["Sales"] - kB.get("Sales", 0.0)
     units_delta = kA["Units"] - kB.get("Units", 0.0)
@@ -986,6 +963,42 @@ def run_app():
 
     st.write("")
 
+
+    # 1B) Leader KPI rows (based on current period + comparison)
+    r1c1, r1c2, r1c3 = st.columns(3)
+    tR = _top_by_current("Retailer")
+    tV = _top_by_current("Vendor")
+    tS = _top_by_current("SKU")
+
+    def _leader_value(name: str, cur_sales: float) -> str:
+        return f"{money(cur_sales)}<div style='font-size:12px;font-weight:700;opacity:0.78;color:var(--text-color);margin-top:6px'>{html.escape(name)}</div>"
+
+    with r1c1:
+        if tR:
+            kpi_card("Top Retailer (Sales)", _leader_value(tR[0], tR[1]), _delta_html(tR[1], tR[2], is_money=True, note=""))
+    with r1c2:
+        if tV:
+            kpi_card("Top Vendor (Sales)", _leader_value(tV[0], tV[1]), _delta_html(tV[1], tV[2], is_money=True, note=""))
+    with r1c3:
+        if tS:
+            kpi_card("Top SKU (Sales)", _leader_value(tS[0], tS[1]), _delta_html(tS[1], tS[2], is_money=True, note=""))
+
+    r2c1, r2c2, r2c3 = st.columns(3)
+    iR = _top_by_increase("Retailer")
+    iV = _top_by_increase("Vendor")
+    iS = _top_by_increase("SKU")
+
+    with r2c1:
+        if iR:
+            kpi_card("Retailer w/ Biggest Increase", _leader_value(iR[0], iR[1]), _delta_html(iR[1], iR[2], is_money=True, note=""))
+    with r2c2:
+        if iV:
+            kpi_card("Vendor w/ Biggest Increase", _leader_value(iV[0], iV[1]), _delta_html(iV[1], iV[2], is_money=True, note=""))
+    with r2c3:
+        if iS:
+            kpi_card("SKU w/ Biggest Increase", _leader_value(iS[0], iS[1]), _delta_html(iS[1], iS[2], is_money=True, note=""))
+
+    st.write("")
     # 2) Drivers (two tables)
     st.subheader("Drivers (Contribution to change)")
     if compare_mode == "None":
