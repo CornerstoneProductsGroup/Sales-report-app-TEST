@@ -1088,6 +1088,22 @@ def run_app():
                 f"{note_html}"
             )
 
+        def kdelta(key: str) -> str:
+            if compare_mode == "None":
+                return ""
+            cur = float(kA.get(key, 0.0))
+            prev = float(kB.get(key, 0.0))
+            if key in ("Sales", "ASP"):
+                return _delta_html(cur, prev, is_money=True)
+            if key in ("Units", "Active SKUs"):
+                return _delta_html(cur, prev, is_money=False)
+            d = cur - prev
+            green = "#2e7d32"
+            red = "#c62828"
+            color = green if d > 0 else (red if d < 0 else "var(--text-color)")
+            arrow = '▲ ' if d > 0 else ('▼ ' if d < 0 else '')
+            return f"<span class='delta-abs' style='color:{color}'>{arrow}{pct_fmt(pct_change(cur, prev))}</span>"
+
 # 0) Intelligence summary
     sales_delta = kA["Sales"] - kB.get("Sales", 0.0)
     units_delta = kA["Units"] - kB.get("Units", 0.0)
