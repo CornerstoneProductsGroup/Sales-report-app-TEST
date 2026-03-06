@@ -650,6 +650,24 @@ def biggest_increase_card(label: str, name: str, current_sales: float, previous_
         unsafe_allow_html=True,
     )
 
+def leader_sales_card(label: str, name: str, current_sales: float, previous_sales: float):
+    delta = float(current_sales) - float(previous_sales)
+    pct = pct_change(float(current_sales), float(previous_sales))
+    color = "#2e7d32" if delta > 0 else ("#c62828" if delta < 0 else "var(--text-color)")
+    arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "•")
+    pct_html = "" if pd.isna(pct) else f'<span class="delta-pct" style="color:{color}">({pct_fmt(pct)})</span>'
+    st.markdown(
+        f"""
+        <div class="kpi-card">
+            <div class="kpi-title">{label}</div>
+            <div class="kpi-big-name">{html.escape(str(name))}</div>
+            <div class="kpi-value">{money(float(current_sales))}</div>
+            <div class="kpi-delta" style="color:{color}"><span class="delta-abs">{arrow} {money(delta)}</span>{pct_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 def render_df(df: pd.DataFrame, height: int = 320):
     st.dataframe(df, use_container_width=True, height=height, hide_index=True)
 
@@ -743,6 +761,32 @@ def run_app():
         }
         .intel-body li{
             margin: 6px 0;
+        }
+        /* Compact HTML tables used below Weekly Detail / Movers */
+        .report-table{
+            width:100% !important;
+            border-collapse: collapse;
+            font-size:13px !important;
+            line-height:1.25;
+        }
+        .report-table th, .report-table td{
+            padding:4px 6px;
+            border-bottom:1px solid rgba(128,128,128,0.18);
+            text-align:left;
+            white-space:nowrap;
+        }
+        .report-table th{
+            font-size:12px !important;
+            font-weight:700;
+            color:var(--text-color);
+            opacity:0.82;
+        }
+        .report-table td{
+            color:var(--text-color);
+        }
+        /* Keep dataframe text aligned with the rest of the app */
+        div[data-testid="stDataFrame"] * {
+            font-size:13px !important;
         }
         </style>
         """,
@@ -1015,18 +1059,15 @@ def run_app():
     tV = _top_by_current("Vendor")
     tS = _top_by_current("SKU")
 
-    def _leader_value(name: str, cur_sales: float) -> str:
-        return f"{money(cur_sales)}<div style='font-size:12px;font-weight:700;opacity:0.78;color:var(--text-color);margin-top:6px'>{html.escape(name)}</div>"
-
     with r1c1:
         if tR:
-            kpi_card("Top Retailer (Sales)", _leader_value(tR[0], tR[1]), _delta_html(tR[1], tR[2], is_money=True, note=""))
+            leader_sales_card("Top Retailer (Sales)", tR[0], tR[1], tR[2])
     with r1c2:
         if tV:
-            kpi_card("Top Vendor (Sales)", _leader_value(tV[0], tV[1]), _delta_html(tV[1], tV[2], is_money=True, note=""))
+            leader_sales_card("Top Vendor (Sales)", tV[0], tV[1], tV[2])
     with r1c3:
         if tS:
-            kpi_card("Top SKU (Sales)", _leader_value(tS[0], tS[1]), _delta_html(tS[1], tS[2], is_money=True, note=""))
+            leader_sales_card("Top SKU (Sales)", tS[0], tS[1], tS[2])
 
     r2c1, r2c2, r2c3 = st.columns(3)
     iR = _top_by_increase("Retailer")
@@ -1209,7 +1250,7 @@ def run_app():
                 piv_disp[c] = piv_disp[c].map(money)
 
         # Render as HTML for color in delta column
-        st.markdown(piv_disp.to_html(escape=False), unsafe_allow_html=True)
+        st.markdown(piv_disp.to_html(escape=False, classes='report-table'), unsafe_allow_html=True)
 
 
     st.subheader("Movers & Trend Leaders")
@@ -1284,13 +1325,13 @@ def run_app():
         with a:
             st.markdown("**Top Increasing (Avg weekly sales vs compare)**")
             if not inc_disp.empty:
-                st.markdown(inc_disp.to_html(escape=False, index=False), unsafe_allow_html=True)
+                st.markdown(inc_disp.to_html(escape=False, index=False, classes='report-table'), unsafe_allow_html=True)
             else:
                 st.caption("None.")
         with b:
             st.markdown("**Top Declining (Avg weekly sales vs compare)**")
             if not dec_disp.empty:
-                st.markdown(dec_disp.to_html(escape=False, index=False), unsafe_allow_html=True)
+                st.markdown(dec_disp.to_html(escape=False, index=False, classes='report-table'), unsafe_allow_html=True)
             else:
                 st.caption("None.")
         with c:
