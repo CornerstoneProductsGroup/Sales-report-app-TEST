@@ -955,6 +955,7 @@ def run_app():
         else:
             pB = period_yoy(pA)
             dfB = filter_by_period(df_scope, pB)
+        a_lbl, b_lbl = ab_labels(timeframe, compare_mode, pA, pB)
 
     # Show period definitions in the sidebar for clarity
     st.sidebar.markdown("### Period Definition")
