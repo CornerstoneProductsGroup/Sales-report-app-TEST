@@ -194,10 +194,44 @@ def filter_by_period(df: pd.DataFrame, p: Period) -> pd.DataFrame:
     w = pd.to_datetime(df["WeekEnd"], errors="coerce")
     return df[(w >= p.start) & (w <= p.end)].copy()
 
+def available_month_labels(df: pd.DataFrame) -> List[str]:
+    w = pd.to_datetime(df.get("WeekEnd"), errors="coerce")
+    vals = sorted(pd.Series(w.dropna().dt.to_period("M").astype(str)).unique().tolist())
+    return vals
+
+def available_year_labels(df: pd.DataFrame) -> List[str]:
+    w = pd.to_datetime(df.get("WeekEnd"), errors="coerce")
+    vals = sorted(pd.Series(w.dropna().dt.year.astype(int).astype(str)).unique().tolist())
+    return vals
+
+def filter_by_period_labels(df: pd.DataFrame, labels: List[str], granularity: str) -> pd.DataFrame:
+    out = df.copy()
+    w = pd.to_datetime(out["WeekEnd"], errors="coerce")
+    if not labels:
+        return out.iloc[0:0].copy()
+    if granularity == "Month":
+        keys = w.dt.to_period("M").astype(str)
+    else:
+        keys = w.dt.year.astype("Int64").astype(str)
+    return out[keys.isin(labels)].copy()
+
+def period_from_df(df: pd.DataFrame) -> Optional[Period]:
+    w = pd.to_datetime(df.get("WeekEnd"), errors="coerce").dropna()
+    if w.empty:
+        return None
+    return Period(start=w.min().normalize(), end=w.max().normalize())
+
+def compact_selection_label(labels: List[str], granularity: str) -> str:
+    if not labels:
+        return f"Selected {granularity.lower()}s"
+    if len(labels) <= 3:
+        return ", ".join(labels)
+    return f"{len(labels)} selected {granularity.lower()}s"
+
 
 def timeframe_short_label(timeframe: str) -> str:
     """Compact label used in column headings."""
-    if timeframe.startswith("Last "):
+    if timeframe.startswith("Last ") and "week" in timeframe.lower():
         m = re.findall(r"\d+", timeframe)
         if m:
             return f"{m[0]}W"
@@ -207,6 +241,10 @@ def timeframe_short_label(timeframe: str) -> str:
         return "YTD" if timeframe == "YTD" else "Year"
     if timeframe == "This Month":
         return "Month"
+    if timeframe == "Custom Months":
+        return "Months"
+    if timeframe == "Custom Years":
+        return "Years"
     if timeframe.startswith("Last ") and "month" in timeframe.lower():
         m = re.findall(r"\d+", timeframe)
         if m:
@@ -850,14 +888,29 @@ def run_app():
             scope_pick = st.multiselect("SKU(s)", options=sorted(df_all["SKU"].dropna().unique()), default=[])
 
         analysis_view = st.radio("Analysis View", ["Standard Intelligence", "Multi Month / Year Compare"], index=0)
+        multi_granularity = "Month"
+        current_labels_sel: List[str] = []
+        compare_labels_sel: List[str] = []
         if analysis_view == "Standard Intelligence":
             timeframe_options = ["Week (latest)", "Last 4 weeks", "Last 8 weeks", "Last 13 weeks", "Last 26 weeks", "Last 52 weeks", "YTD"]
             timeframe_index = 2
+            timeframe = st.selectbox("Timeframe", timeframe_options, index=timeframe_index)
+            compare_mode = st.selectbox("Compare", ["None", "Prior period (same length)", "YoY (same dates)"], index=1)
         else:
-            timeframe_options = ["This Month", "Last 2 months", "Last 3 months", "Last 6 months", "Last 12 months", "This Year", "Last 2 years", "Last 3 years"]
-            timeframe_index = 2
-        timeframe = st.selectbox("Timeframe", timeframe_options, index=timeframe_index)
-        compare_mode = st.selectbox("Compare", ["None", "Prior period (same length)", "YoY (same dates)"], index=1)
+            multi_granularity = st.selectbox("Compare By", ["Month", "Year"], index=0)
+            if multi_granularity == "Month":
+                timeframe = "Custom Months"
+                period_options = available_month_labels(df_all)
+                default_current = period_options[-1:]
+                default_compare = period_options[-2:-1]
+            else:
+                timeframe = "Custom Years"
+                period_options = available_year_labels(df_all)
+                default_current = period_options[-1:]
+                default_compare = period_options[-2:-1]
+            current_labels_sel = st.multiselect(f"Current {multi_granularity}s", options=period_options, default=default_current)
+            compare_labels_sel = st.multiselect(f"Compare {multi_granularity}s", options=period_options, default=default_compare)
+            compare_mode = "Custom selection" if compare_labels_sel else "None"
 
         min_sales = st.number_input("Min Sales ($) for lists", min_value=0.0, value=0.0, step=100.0)
         min_units = st.number_input("Min Units for lists", min_value=0.0, value=0.0, step=10.0)
@@ -874,26 +927,36 @@ def run_app():
     elif scope == "SKU" and scope_pick:
         df_scope = df_scope[df_scope["SKU"].isin(scope_pick)]
 
-    # Choose current period
-    pA = pick_period(df_scope, timeframe)
-    if pA is None:
-        st.info("Upload or ingest data to begin.")
-        return
-
-    dfA = filter_by_period(df_scope, pA)
-    if compare_mode == "None":
-        pB = None
-        dfB = dfA.iloc[0:0].copy()
-    elif compare_mode.startswith("Prior"):
-        pB = period_prev_same_length(pA)
-        dfB = filter_by_period(df_scope, pB)
+    # Choose current / comparison periods
+    custom_labels = None
+    if analysis_view == "Multi Month / Year Compare":
+        dfA = filter_by_period_labels(df_scope, current_labels_sel, multi_granularity)
+        dfB = filter_by_period_labels(df_scope, compare_labels_sel, multi_granularity) if compare_labels_sel else df_scope.iloc[0:0].copy()
+        pA = period_from_df(dfA)
+        pB = period_from_df(dfB) if not dfB.empty else None
+        if pA is None:
+            st.info("Choose one or more months/years to begin.")
+            return
+        a_lbl = compact_selection_label(current_labels_sel, multi_granularity)
+        b_lbl = compact_selection_label(compare_labels_sel, multi_granularity) if pB is not None else None
+        custom_labels = (a_lbl, b_lbl)
     else:
-        pB = period_yoy(pA)
-        dfB = filter_by_period(df_scope, pB)
+        pA = pick_period(df_scope, timeframe)
+        if pA is None:
+            st.info("Upload or ingest data to begin.")
+            return
+        dfA = filter_by_period(df_scope, pA)
+        if compare_mode == "None":
+            pB = None
+            dfB = dfA.iloc[0:0].copy()
+        elif compare_mode.startswith("Prior"):
+            pB = period_prev_same_length(pA)
+            dfB = filter_by_period(df_scope, pB)
+        else:
+            pB = period_yoy(pA)
+            dfB = filter_by_period(df_scope, pB)
 
-    
     # Show period definitions in the sidebar for clarity
-    a_lbl, b_lbl = ab_labels(timeframe, compare_mode, pA, pB)
     st.sidebar.markdown("### Period Definition")
     st.sidebar.markdown(f"**Current:** {a_lbl}<br><span style='opacity:0.8'>{format_period_range(pA)}</span>", unsafe_allow_html=True)
     if compare_mode != "None" and pB is not None:
@@ -918,7 +981,6 @@ def run_app():
     placements = new_placement(df_hist_for_new, pA)
 
     # Layout
-    a_lbl, b_lbl = ab_labels(timeframe, compare_mode, pA, pB)
     cur_range = format_period_range(pA)
     cmp_range = format_period_range(pB) if pB is not None else ""
     cmp_name = b_lbl or ""
@@ -1133,7 +1195,6 @@ def run_app():
         left,right = st.columns(2)
 
         # Rename A/B columns for clearer display
-        a_lbl, b_lbl = ab_labels(timeframe, compare_mode, pA, pB)
         pos_disp = rename_ab_columns(pos, a_lbl, b_lbl)
         neg_disp = rename_ab_columns(neg, a_lbl, b_lbl)
         sales_a_col = f"Sales ({a_lbl})"
@@ -1270,16 +1331,15 @@ def run_app():
         else:
             piv["Δ vs prior week"] = 0.0
 
-        # Pretty currency formatting
+        # Pretty currency formatting to match the rest of the app tables
         piv_disp = piv.copy()
         for c in piv_disp.columns:
             if c == "Δ vs prior week":
-                piv_disp[c] = piv_disp[c].map(lambda x: f"<span style='color:{'#2e7d32' if x>0 else ('#c62828' if x<0 else 'var(--text-color)')}'>{money(x) if x<0 else money(x) if x==0 else '+'+money(x)}</span>")
+                piv_disp[c] = piv_disp[c].map(lambda x: ("+" if x > 0 else "") + money(x))
             else:
                 piv_disp[c] = piv_disp[c].map(money)
-
-        # Render as HTML for color in delta column
-        st.markdown(piv_disp.to_html(escape=False, classes='report-table'), unsafe_allow_html=True)
+        piv_disp = piv_disp.reset_index()
+        render_df(piv_disp, height=320)
 
 
     st.subheader("Movers & Trend Leaders")
@@ -1376,7 +1436,6 @@ def run_app():
     if compare_mode == "None":
         st.info("Select a comparison mode to use the contribution tree.")
     else:
-        a_lbl, b_lbl = ab_labels(timeframe, compare_mode, pA, pB)
         sales_a_col = f"Sales ({a_lbl})"
         sales_b_col = f"Sales ({b_lbl})" if b_lbl else "Sales (Comparison)"
 
