@@ -20,8 +20,6 @@ APP_TITLE = "Cornerstone Sales Intelligence"
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 DEFAULT_VENDOR_MAP = DATA_DIR / "vendor_map.xlsx"
 DEFAULT_STORE_CSV = DATA_DIR / "sales_store.csv"
-DEFAULT_PRICE_HISTORY = DATA_DIR / "price_history.csv"
-DEFAULT_YEAR_LOCKS = DATA_DIR / "year_locks.json"
 
 # -----------------------------
 # Normalization helpers
@@ -87,100 +85,6 @@ def save_store(df: pd.DataFrame) -> None:
             keep[c] = np.nan
     keep = keep[["Retailer","SKU","Units","UnitPrice","StartDate","EndDate","SourceFile"]].copy()
     keep.to_csv(DEFAULT_STORE_CSV, index=False)
-
-
-def _ensure_data_dir() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def create_data_backup_zip() -> bytes:
-    import zipfile
-    _ensure_data_dir()
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for path in [DEFAULT_STORE_CSV, DEFAULT_VENDOR_MAP, DEFAULT_PRICE_HISTORY, DEFAULT_YEAR_LOCKS]:
-            if path.exists():
-                z.write(path, arcname=f"data/{path.name}")
-    buf.seek(0)
-    return buf.getvalue()
-
-
-def restore_data_backup_zip(zip_bytes: bytes) -> tuple[bool, str]:
-    import zipfile
-    _ensure_data_dir()
-    allowed = {"sales_store.csv", "vendor_map.xlsx", "price_history.csv", "year_locks.json"}
-    try:
-        with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as z:
-            names = z.namelist()
-            restored = []
-            for member in names:
-                base = Path(member).name
-                if base not in allowed:
-                    continue
-                target = DATA_DIR / base
-                target.write_bytes(z.read(member))
-                restored.append(base)
-        if not restored:
-            return False, "No compatible backup files were found in the ZIP."
-        return True, f"Restore complete: {', '.join(sorted(restored))}."
-    except Exception as e:
-        return False, f"Restore failed: {e}"
-
-
-def replace_year_in_store(df_raw: pd.DataFrame, target_year: int) -> pd.DataFrame:
-    if df_raw is None or df_raw.empty:
-        return df_raw.copy() if df_raw is not None else pd.DataFrame(columns=["Retailer","SKU","Units","UnitPrice","StartDate","EndDate","SourceFile"])
-    out = df_raw.copy()
-    start = pd.to_datetime(out.get("StartDate"), errors="coerce")
-    end = pd.to_datetime(out.get("EndDate"), errors="coerce")
-    week_end = end.fillna(start)
-    mask = week_end.dt.year != int(target_year)
-    return out[mask.fillna(True)].copy()
-
-
-def data_year_summary(df_all: pd.DataFrame) -> pd.DataFrame:
-    if df_all is None or df_all.empty or "WeekEnd" not in df_all.columns:
-        return pd.DataFrame(columns=["Year","Weeks","Rows","Retailers","Vendors","SKUs","Sales","First Week","Last Week"])
-    d = df_all.copy()
-    d["WeekEnd"] = pd.to_datetime(d["WeekEnd"], errors="coerce")
-    d = d[d["WeekEnd"].notna()].copy()
-    if d.empty:
-        return pd.DataFrame(columns=["Year","Weeks","Rows","Retailers","Vendors","SKUs","Sales","First Week","Last Week"])
-    d["Year"] = d["WeekEnd"].dt.year.astype(int)
-    out = d.groupby("Year", as_index=False).agg(
-        Weeks=("WeekEnd", "nunique"),
-        Rows=("SKU", "size"),
-        Retailers=("Retailer", "nunique"),
-        Vendors=("Vendor", "nunique"),
-        SKUs=("SKU", "nunique"),
-        Sales=("Sales", "sum"),
-        First_Week=("WeekEnd", "min"),
-        Last_Week=("WeekEnd", "max"),
-    ).sort_values("Year")
-    out["First Week"] = pd.to_datetime(out["First_Week"]).dt.date.astype(str)
-    out["Last Week"] = pd.to_datetime(out["Last_Week"]).dt.date.astype(str)
-    out = out.drop(columns=["First_Week", "Last_Week"])
-    return out[["Year","Weeks","Rows","Retailers","Vendors","SKUs","Sales","First Week","Last Week"]]
-
-
-def data_week_summary(df_all: pd.DataFrame, year: int) -> pd.DataFrame:
-    if df_all is None or df_all.empty or "WeekEnd" not in df_all.columns:
-        return pd.DataFrame(columns=["Week End","Week Label","Rows","Retailers","Vendors","SKUs","Sales"])
-    d = df_all.copy()
-    d["WeekEnd"] = pd.to_datetime(d["WeekEnd"], errors="coerce")
-    d = d[d["WeekEnd"].notna()].copy()
-    d = d[d["WeekEnd"].dt.year == int(year)].copy()
-    if d.empty:
-        return pd.DataFrame(columns=["Week End","Week Label","Rows","Retailers","Vendors","SKUs","Sales"])
-    out = d.groupby(["WeekEnd","WeekLabel"], as_index=False).agg(
-        Rows=("SKU", "size"),
-        Retailers=("Retailer", "nunique"),
-        Vendors=("Vendor", "nunique"),
-        SKUs=("SKU", "nunique"),
-        Sales=("Sales", "sum"),
-    ).sort_values("WeekEnd", ascending=False)
-    out["Week End"] = pd.to_datetime(out["WeekEnd"]).dt.date.astype(str)
-    return out[["Week End","WeekLabel","Rows","Retailers","Vendors","SKUs","Sales"]].rename(columns={"WeekLabel":"Week Label"})
 
 def load_vendor_map() -> pd.DataFrame:
     if not DEFAULT_VENDOR_MAP.exists():
@@ -753,6 +657,141 @@ def opportunity_detector(df_all: pd.DataFrame, df_a: pd.DataFrame, df_b: pd.Data
         "Retailer Growth Gaps": gaps_df,
     }
 
+
+
+def add_period_label(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
+    out = df.copy()
+    w = pd.to_datetime(out["WeekEnd"], errors="coerce")
+    if granularity == "Month":
+        out["PeriodLabel"] = w.dt.to_period("M").astype(str)
+    else:
+        out["PeriodLabel"] = w.dt.year.astype("Int64").astype(str)
+    return out[out["PeriodLabel"].notna()].copy()
+
+def multi_period_summary(df: pd.DataFrame, granularity: str, labels: List[str]) -> pd.DataFrame:
+    d = add_period_label(df, granularity)
+    if labels:
+        d = d[d["PeriodLabel"].isin(labels)].copy()
+    if d.empty:
+        return pd.DataFrame(columns=["Period","Sales","Units","ASP","Active SKUs","Retailers","Vendors"])
+    g = d.groupby("PeriodLabel", as_index=False).agg(
+        Sales=("Sales","sum"),
+        Units=("Units","sum"),
+        Retailers=("Retailer","nunique"),
+        Vendors=("Vendor","nunique"),
+    )
+    active = d[d["Sales"] > 0].groupby("PeriodLabel")["SKU"].nunique().rename("Active SKUs").reset_index()
+    g = g.merge(active, on="PeriodLabel", how="left").fillna({"Active SKUs": 0})
+    g["ASP"] = np.where(g["Units"] != 0, g["Sales"] / g["Units"], 0.0)
+    order = {lab: i for i, lab in enumerate(labels)}
+    g["__ord"] = g["PeriodLabel"].map(order).fillna(10**9)
+    g = g.sort_values(["__ord","PeriodLabel"]).drop(columns="__ord")
+    return g.rename(columns={"PeriodLabel":"Period"})
+
+def multi_period_pivot(df: pd.DataFrame, dim: str, granularity: str, labels: List[str], value_col: str = "Sales", top_n: int = 10) -> pd.DataFrame:
+    d = add_period_label(df, granularity)
+    if labels:
+        d = d[d["PeriodLabel"].isin(labels)].copy()
+    if d.empty:
+        return pd.DataFrame()
+    overall = d.groupby(dim, as_index=False).agg(Total=(value_col, "sum")).sort_values("Total", ascending=False).head(top_n)
+    d = d[d[dim].isin(overall[dim])].copy()
+    piv = d.pivot_table(index=dim, columns="PeriodLabel", values=value_col, aggfunc="sum", fill_value=0.0)
+    for lab in labels:
+        if lab not in piv.columns:
+            piv[lab] = 0.0
+    piv = piv[labels]
+    piv["Total"] = piv.sum(axis=1)
+    piv = piv.sort_values("Total", ascending=False).drop(columns="Total")
+    return piv
+
+def render_strategic_intelligence(dfA: pd.DataFrame, dfB: pd.DataFrame, df_hist_for_new: pd.DataFrame, pA: Period, a_lbl: str, b_lbl: Optional[str], compare_mode: str, min_sales: float, show_full_history_lifecycle: bool):
+    st.divider()
+    st.header("Strategic Intelligence")
+    st.subheader("1) Contribution Tree (Where did change come from?)")
+    if compare_mode == "None":
+        st.info("Select a comparison mode to use the contribution tree.")
+    else:
+        sales_a_col = f"Sales ({a_lbl})"
+        sales_b_col = f"Sales ({b_lbl})" if b_lbl else "Sales (Comparison)"
+        lvl1 = drivers(dfA, dfB, "Retailer").sort_values("Sales_Δ", ascending=False)
+        st.markdown("**Level 1 — Retailers**")
+        lvl1_disp = lvl1[["Retailer","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
+        lvl1_disp["Sales_A"] = lvl1_disp["Sales_A"].map(money)
+        lvl1_disp["Sales_B"] = lvl1_disp["Sales_B"].map(money)
+        lvl1_disp["Sales_Δ"] = lvl1_disp["Sales_Δ"].map(money)
+        lvl1_disp["Contribution_%"] = lvl1_disp["Contribution_%"].map(pct_fmt)
+        lvl1_disp = rename_ab_columns(lvl1_disp, a_lbl, b_lbl)
+        render_df(lvl1_disp[["Retailer", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=260)
+        pick_r = st.selectbox("Drill into Retailer", options=["(none)"] + sorted(lvl1["Retailer"].astype(str).tolist()), index=0, key=f"pick_r_{a_lbl}_{b_lbl}")
+        if pick_r != "(none)":
+            dfA_r = dfA[dfA["Retailer"] == pick_r].copy()
+            dfB_r = dfB[dfB["Retailer"] == pick_r].copy()
+            lvl2 = drivers(dfA_r, dfB_r, "Vendor").sort_values("Sales_Δ", ascending=False)
+            st.markdown(f"**Level 2 — Vendors inside {pick_r}**")
+            lvl2_disp = lvl2[["Vendor","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
+            lvl2_disp["Sales_A"] = lvl2_disp["Sales_A"].map(money)
+            lvl2_disp["Sales_B"] = lvl2_disp["Sales_B"].map(money)
+            lvl2_disp["Sales_Δ"] = lvl2_disp["Sales_Δ"].map(money)
+            lvl2_disp["Contribution_%"] = lvl2_disp["Contribution_%"].map(pct_fmt)
+            lvl2_disp = rename_ab_columns(lvl2_disp, a_lbl, b_lbl)
+            render_df(lvl2_disp[["Vendor", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
+            pick_v = st.selectbox("Drill into Vendor", options=["(none)"] + sorted(lvl2["Vendor"].astype(str).tolist()), index=0, key=f"pick_v_{a_lbl}_{b_lbl}")
+            if pick_v != "(none)":
+                dfA_v = dfA_r[dfA_r["Vendor"] == pick_v].copy()
+                dfB_v = dfB_r[dfB_r["Vendor"] == pick_v].copy()
+                lvl3 = drivers(dfA_v, dfB_v, "SKU").sort_values("Sales_Δ", ascending=False)
+                st.markdown(f"**Level 3 — SKUs inside {pick_r} → {pick_v}**")
+                lvl3_disp = lvl3[["SKU","Sales_A","Sales_B","Sales_Δ","Contribution_%"]].copy()
+                lvl3_disp["Sales_A"] = lvl3_disp["Sales_A"].map(money)
+                lvl3_disp["Sales_B"] = lvl3_disp["Sales_B"].map(money)
+                lvl3_disp["Sales_Δ"] = lvl3_disp["Sales_Δ"].map(money)
+                lvl3_disp["Contribution_%"] = lvl3_disp["Contribution_%"].map(pct_fmt)
+                lvl3_disp = rename_ab_columns(lvl3_disp, a_lbl, b_lbl)
+                render_df(lvl3_disp[["SKU", sales_a_col, sales_b_col, "Sales_Δ", "Contribution_%"]], height=240)
+    st.subheader("2) SKU Lifecycle (Launch → Growth → Mature → Decline → Dormant)")
+    life_df_src = df_hist_for_new if show_full_history_lifecycle else pd.concat([dfA, dfB], ignore_index=True)
+    life = lifecycle_table(life_df_src, pA, lookback_weeks=8)
+    if life.empty:
+        st.caption("Not enough data to compute lifecycle.")
+    else:
+        stage_counts = life["Stage"].value_counts().reset_index()
+        stage_counts.columns = ["Stage","Count"]
+        left,right = st.columns([1,2])
+        with left:
+            st.markdown("**Stage Summary**")
+            render_df(stage_counts, height=220)
+        with right:
+            st.markdown("**Lifecycle Detail (trend + momentum + recent change)**")
+            life_show = life.copy()
+            if min_sales > 0:
+                life_show = life_show[life_show["Sales (lookback)"] >= min_sales].copy()
+            life_show["Sales (lookback)"] = life_show["Sales (lookback)"].map(money)
+            life_show["Units (lookback)"] = life_show["Units (lookback)"].map(lambda v: f"{v:,.0f}")
+            life_show["Last Week Sales"] = life_show["Last Week Sales"].map(money)
+            life_show["WoW Sales Δ"] = life_show["WoW Sales Δ"].map(lambda v: "" if pd.isna(v) else money(v))
+            if "Slope" in life_show.columns:
+                life_show["Slope"] = life_show["Slope"].map(lambda v: f"{v:,.2f}")
+            for dc in ["First Sale","Last Sale"]:
+                if dc in life_show.columns:
+                    life_show[dc] = pd.to_datetime(life_show[dc], errors="coerce").dt.date.astype(str)
+            cols = ["SKU","Stage","Trend","Momentum","Sales (lookback)","Units (lookback)","Last Week Sales","WoW Sales Δ","Slope","Weeks Up","Weeks Down","First Sale","Last Sale"]
+            cols = [c for c in cols if c in life_show.columns]
+            render_df(life_show[cols].head(60), height=520)
+    st.divider()
+    st.subheader("3) Opportunity Detector (Find expansion + gaps)")
+    if compare_mode == "None":
+        st.info("Select a comparison mode to power opportunity signals (needs a comparison).")
+    else:
+        opp = opportunity_detector(df_hist_for_new, dfA, dfB, pA)
+        tabs = st.tabs(list(opp.keys()))
+        for t, (name, odf) in zip(tabs, opp.items()):
+            with t:
+                if odf.empty:
+                    st.caption("No signals found with current filters/thresholds.")
+                else:
+                    render_df(odf, height=420)
+
 # -----------------------------
 # UI helpers
 # -----------------------------
@@ -1044,81 +1083,18 @@ def run_app():
 
     with st.sidebar:
         st.header("Data")
-        up = st.file_uploader("Upload weekly sales workbook (.xlsx)", type=["xlsx"], key="quick_upload")
-        year = st.number_input("Year hint (for filename parsing)", min_value=2010, max_value=2100, value=date.today().year, step=1, key="quick_year")
-        if st.button("Ingest upload", disabled=(up is None), key="btn_quick_ingest"):
+        up = st.file_uploader("Upload weekly sales workbook (.xlsx)", type=["xlsx"])
+        year = st.number_input("Year hint (for filename parsing)", min_value=2010, max_value=2100, value=date.today().year, step=1)
+        if st.button("Ingest upload", disabled=(up is None)):
             if up is not None:
                 raw = read_weekly_workbook(up, int(year))
+                # enrich now so we can persist UnitPrice (legacy) but also show computed
+                new = enrich_sales(raw, vm)
+                # Persist in legacy shape
                 merged = pd.concat([store, raw], ignore_index=True)
                 save_store(merged)
                 st.success(f"Ingested {len(raw):,} rows from {getattr(up,'name','upload.xlsx')}.")
-                st.rerun()
-
-        with st.expander("Data Management Center", expanded=False):
-            df_mgmt = enrich_sales(store, vm)
-            summary_df = data_year_summary(df_mgmt)
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.metric("Years", int(summary_df["Year"].nunique()) if not summary_df.empty else 0)
-            with c2:
-                st.metric("Weeks", int(summary_df["Weeks"].sum()) if not summary_df.empty else 0)
-            with c3:
-                st.metric("Rows", f"{len(store):,}")
-
-            st.markdown("**Uploaded years / weeks**")
-            if summary_df.empty:
-                st.caption("No sales data uploaded yet.")
-            else:
-                show_summary = summary_df.copy()
-                show_summary["Sales"] = show_summary["Sales"].map(lambda v: f"${v:,.0f}")
-                st.dataframe(show_summary, use_container_width=True, hide_index=True, height=min(260, 44 + 35 * (len(show_summary) + 1)))
-                year_opts = sorted(show_summary["Year"].astype(int).tolist())
-                pick_year = st.selectbox("View uploaded weeks for year", options=year_opts, index=len(year_opts)-1, key="dm_pick_year")
-                weeks_df = data_week_summary(df_mgmt, int(pick_year))
-                if not weeks_df.empty:
-                    weeks_df["Sales"] = weeks_df["Sales"].map(lambda v: f"${v:,.0f}")
-                    st.dataframe(weeks_df, use_container_width=True, hide_index=True, height=min(260, 44 + 35 * (len(weeks_df) + 1)))
-
-            st.markdown("**Upload new year / missing weeks**")
-            year_uploads = st.file_uploader("Upload one or more weekly workbooks", type=["xlsx"], accept_multiple_files=True, key="dm_bulk_upload")
-            ingest_year = st.number_input("Year for uploaded workbooks", min_value=2010, max_value=2100, value=date.today().year, step=1, key="dm_year")
-            replace_existing_year = st.checkbox("Replace existing rows for this year before ingest", value=False, key="dm_replace_year")
-            if st.button("Ingest uploaded workbooks", disabled=not year_uploads, key="btn_dm_ingest"):
-                all_new = []
-                for f in year_uploads or []:
-                    try:
-                        rows = read_weekly_workbook(f, int(ingest_year))
-                        if rows is not None and not rows.empty:
-                            all_new.append(rows)
-                    except Exception as e:
-                        st.error(f"Failed to read {getattr(f, 'name', 'upload')}: {e}")
-                if all_new:
-                    combined_new = pd.concat(all_new, ignore_index=True)
-                    base_store = replace_year_in_store(store, int(ingest_year)) if replace_existing_year else store.copy()
-                    merged = pd.concat([base_store, combined_new], ignore_index=True)
-                    save_store(merged)
-                    st.success(f"Ingested {len(all_new):,} workbook(s) for {int(ingest_year)}.")
-                    st.rerun()
-                else:
-                    st.info("No rows found in the uploaded workbooks.")
-
-            st.markdown("**Backup / Restore**")
-            st.download_button(
-                "Download backup ZIP",
-                data=create_data_backup_zip(),
-                file_name="cornerstone_sales_backup.zip",
-                mime="application/zip",
-                use_container_width=True,
-                key="btn_dm_backup",
-            )
-            restore_zip = st.file_uploader("Restore backup ZIP", type=["zip"], key="dm_restore_zip")
-            if st.button("Restore backup", disabled=(restore_zip is None), key="btn_dm_restore"):
-                ok, msg = restore_data_backup_zip(restore_zip.getvalue())
-                if ok:
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
+                store = load_store()
 
         st.divider()
         st.header("Filters")
@@ -1139,6 +1115,7 @@ def run_app():
         multi_granularity = "Month"
         current_labels_sel: List[str] = []
         compare_labels_sel: List[str] = []
+        selected_labels: List[str] = []
         if analysis_view == "Standard Intelligence":
             timeframe_options = ["Week (latest)", "Last 4 weeks", "Last 8 weeks", "Last 13 weeks", "Last 26 weeks", "Last 52 weeks", "YTD"]
             timeframe_index = 2
@@ -1146,34 +1123,22 @@ def run_app():
             compare_mode = st.selectbox("Compare", ["None", "Prior period (same length)", "YoY (same dates)"], index=1)
         elif analysis_view == "Month / Year Compare":
             multi_granularity = st.selectbox("Compare By", ["Month", "Year"], index=0, key="my_compare_by")
-            if multi_granularity == "Month":
-                timeframe = "Custom Months"
-                period_options = available_month_labels(df_all)
-            else:
-                timeframe = "Custom Years"
-                period_options = available_year_labels(df_all)
-            default_current = period_options[-1] if period_options else None
-            default_compare = period_options[-2] if len(period_options) > 1 else default_current
-            current_one = st.selectbox(f"Current {multi_granularity}", options=period_options, index=(len(period_options)-1 if period_options else 0))
-            compare_one = st.selectbox(f"Compare {multi_granularity}", options=period_options, index=(len(period_options)-2 if len(period_options)>1 else 0))
+            period_options = available_month_labels(df_all) if multi_granularity == "Month" else available_year_labels(df_all)
+            timeframe = "Custom Months" if multi_granularity == "Month" else "Custom Years"
+            current_idx = (len(period_options)-1 if period_options else 0)
+            compare_idx = (len(period_options)-2 if len(period_options) > 1 else current_idx)
+            current_one = st.selectbox(f"Current {multi_granularity}", options=period_options, index=current_idx)
+            compare_one = st.selectbox(f"Compare {multi_granularity}", options=period_options, index=compare_idx)
             current_labels_sel = [current_one] if current_one else []
             compare_labels_sel = [compare_one] if compare_one else []
             compare_mode = "Custom selection" if compare_labels_sel else "None"
         else:
             multi_granularity = st.selectbox("Compare By", ["Month", "Year"], index=0, key="multi_compare_by")
-            if multi_granularity == "Month":
-                timeframe = "Custom Months"
-                period_options = available_month_labels(df_all)
-                default_current = period_options[-1:] if period_options else []
-                default_compare = period_options[-2:-1] if len(period_options) > 1 else default_current
-            else:
-                timeframe = "Custom Years"
-                period_options = available_year_labels(df_all)
-                default_current = period_options[-1:] if period_options else []
-                default_compare = period_options[-2:-1] if len(period_options) > 1 else default_current
-            current_labels_sel = st.multiselect(f"Current {multi_granularity}s", options=period_options, default=default_current)
-            compare_labels_sel = st.multiselect(f"Compare {multi_granularity}s", options=period_options, default=default_compare)
-            compare_mode = "Custom selection" if compare_labels_sel else "None"
+            period_options = available_month_labels(df_all) if multi_granularity == "Month" else available_year_labels(df_all)
+            timeframe = "Custom Months" if multi_granularity == "Month" else "Custom Years"
+            default_selected = period_options[-3:] if len(period_options) >= 3 else period_options
+            selected_labels = st.multiselect(f"Select {multi_granularity}s to compare", options=period_options, default=default_selected)
+            compare_mode = "Multi selection"
 
         min_sales = st.number_input("Min Sales ($) for lists", min_value=0.0, value=0.0, step=100.0)
         min_units = st.number_input("Min Units for lists", min_value=0.0, value=0.0, step=10.0)
@@ -1192,7 +1157,7 @@ def run_app():
 
     # Choose current / comparison periods
     custom_labels = None
-    if analysis_view in ("Month / Year Compare", "Multi Month / Year Compare"):
+    if analysis_view == "Month / Year Compare":
         dfA = filter_by_period_labels(df_scope, current_labels_sel, multi_granularity)
         dfB = filter_by_period_labels(df_scope, compare_labels_sel, multi_granularity) if compare_labels_sel else df_scope.iloc[0:0].copy()
         pA = period_from_df(dfA)
@@ -1203,6 +1168,19 @@ def run_app():
         a_lbl = compact_selection_label(current_labels_sel, multi_granularity)
         b_lbl = compact_selection_label(compare_labels_sel, multi_granularity) if pB is not None else None
         custom_labels = (a_lbl, b_lbl)
+        render_strategic_intelligence(dfA, dfB, df_hist_for_new, pA, a_lbl, b_lbl, compare_mode, min_sales, show_full_history_lifecycle)
+
+    elif analysis_view == "Multi Month / Year Compare":
+        dfA = filter_by_period_labels(df_scope, selected_labels, multi_granularity)
+        dfB = df_scope.iloc[0:0].copy()
+        pA = period_from_df(dfA)
+        pB = None
+        if pA is None:
+            st.info("Choose one or more months/years to begin.")
+            return
+        a_lbl = compact_selection_label(selected_labels, multi_granularity)
+        b_lbl = None
+        custom_labels = (a_lbl, None)
     else:
         pA = pick_period(df_scope, timeframe)
         if pA is None:
@@ -1738,13 +1716,73 @@ def run_app():
             if dec.empty: st.caption("None.")
             else: render_df(dec[["SKU", f"Sales ({a_lbl})", f"Sales ({b_lbl})", "Difference", "% Change"]], height=360)
     elif analysis_view == "Multi Month / Year Compare":
-        st.subheader("Multi Compare")
-        st.info("Multi Month / Year Compare is ready for selecting multiple months or years. The detailed KPI and table layout for 3+ period analysis is being kept separate so the 2-period compare stays stable.")
-        pivot_dim = st.selectbox("Compare rows by", options=["Retailer","Vendor"], index=0, key="multi_compare_dim_v2")
-        comp = dfA.groupby(pivot_dim, as_index=False).agg(Sales=("Sales","sum"), Units=("Units","sum"))
-        comp["Sales"] = comp["Sales"].map(money)
-        comp["Units"] = comp["Units"].map(lambda v: f"{float(v):,.0f}")
-        render_df(comp, height=360)
+        st.subheader("Multi Month / Year Compare")
+        dsel = add_period_label(df_scope, multi_granularity)
+        dsel = dsel[dsel["PeriodLabel"].isin(selected_labels)].copy()
+        if dsel.empty:
+            st.info("Select one or more months/years to compare.")
+            return
+        summary = multi_period_summary(df_scope, multi_granularity, selected_labels)
+        if summary.empty:
+            st.info("No data found for the selected periods.")
+            return
+        best_row = summary.sort_values("Sales", ascending=False).iloc[0]
+        worst_row = summary.sort_values("Sales", ascending=True).iloc[0]
+        top_retailer = dsel.groupby("Retailer", as_index=False).agg(Sales=("Sales","sum")).sort_values("Sales", ascending=False).head(1)
+        top_vendor = dsel.groupby("Vendor", as_index=False).agg(Sales=("Sales","sum")).sort_values("Sales", ascending=False).head(1)
+        top_sku = dsel.groupby("SKU", as_index=False).agg(Sales=("Sales","sum")).sort_values("Sales", ascending=False).head(1)
+        k1, k2, k3, k4 = st.columns(4)
+        with k1: kpi_card("Best Period", f"{best_row['Period']}<br>{money(float(best_row['Sales']))}")
+        with k2: kpi_card("Worst Period", f"{worst_row['Period']}<br>{money(float(worst_row['Sales']))}")
+        with k3: kpi_card("Top Retailer Overall", f"{top_retailer.iloc[0]['Retailer']}<br>{money(float(top_retailer.iloc[0]['Sales']))}" if not top_retailer.empty else "—")
+        with k4: kpi_card("Top Vendor Overall", f"{top_vendor.iloc[0]['Vendor']}<br>{money(float(top_vendor.iloc[0]['Sales']))}" if not top_vendor.empty else "—")
+        k5, _, _, _ = st.columns(4)
+        with k5: kpi_card("Top SKU Overall", f"{top_sku.iloc[0]['SKU']}<br>{money(float(top_sku.iloc[0]['Sales']))}" if not top_sku.empty else "—")
+        st.subheader("Period Summary")
+        metric_choice = st.selectbox("Metric", ["Sales","Units","ASP"], index=0, key="multi_metric_choice")
+        chart_df = summary.set_index("Period")[[metric_choice]]
+        st.bar_chart(chart_df, use_container_width=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Summary Table**")
+            show_sum = summary.copy()
+            show_sum["Sales"] = show_sum["Sales"].map(money)
+            show_sum["Units"] = show_sum["Units"].map(lambda v: f"{float(v):,.0f}")
+            show_sum["ASP"] = show_sum["ASP"].map(money)
+            render_df(show_sum, height=320)
+        with c2:
+            st.markdown("**Selected Period Trend**")
+            trend_df = summary.set_index("Period")[["Sales","Units","ASP"]]
+            st.line_chart(trend_df, use_container_width=True)
+        st.subheader("Retailer Comparison")
+        ret_piv = multi_period_pivot(dsel, "Retailer", multi_granularity, selected_labels, value_col="Sales", top_n=10)
+        if ret_piv.empty:
+            st.caption("No retailer data for selected periods.")
+        else:
+            st.bar_chart(ret_piv.T, use_container_width=True)
+            ret_show = ret_piv.reset_index().copy()
+            for c in ret_show.columns[1:]:
+                ret_show[c] = ret_show[c].map(money)
+            render_df(ret_show, height=320)
+        st.subheader("Vendor Comparison")
+        ven_piv = multi_period_pivot(dsel, "Vendor", multi_granularity, selected_labels, value_col="Sales", top_n=10)
+        if ven_piv.empty:
+            st.caption("No vendor data for selected periods.")
+        else:
+            st.bar_chart(ven_piv.T, use_container_width=True)
+            ven_show = ven_piv.reset_index().copy()
+            for c in ven_show.columns[1:]:
+                ven_show[c] = ven_show[c].map(money)
+            render_df(ven_show, height=320)
+        st.subheader("Top SKU Comparison")
+        sku_piv = multi_period_pivot(dsel, "SKU", multi_granularity, selected_labels, value_col="Sales", top_n=15)
+        if sku_piv.empty:
+            st.caption("No SKU data for selected periods.")
+        else:
+            sku_show = sku_piv.reset_index().copy()
+            for c in sku_show.columns[1:]:
+                sku_show[c] = sku_show[c].map(money)
+            render_df(sku_show, height=360)
     else:
         # original standard view sections
         st.subheader("New Activity")
