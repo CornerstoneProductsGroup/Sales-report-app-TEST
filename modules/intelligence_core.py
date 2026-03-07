@@ -20,6 +20,8 @@ APP_TITLE = "Cornerstone Sales Intelligence"
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 DEFAULT_VENDOR_MAP = DATA_DIR / "vendor_map.xlsx"
 DEFAULT_STORE_CSV = DATA_DIR / "sales_store.csv"
+DEFAULT_PRICE_HISTORY = DATA_DIR / "price_history.csv"
+DEFAULT_YEAR_LOCKS = DATA_DIR / "year_locks.json"
 
 # -----------------------------
 # Normalization helpers
@@ -85,6 +87,100 @@ def save_store(df: pd.DataFrame) -> None:
             keep[c] = np.nan
     keep = keep[["Retailer","SKU","Units","UnitPrice","StartDate","EndDate","SourceFile"]].copy()
     keep.to_csv(DEFAULT_STORE_CSV, index=False)
+
+
+def _ensure_data_dir() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def create_data_backup_zip() -> bytes:
+    import zipfile
+    _ensure_data_dir()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for path in [DEFAULT_STORE_CSV, DEFAULT_VENDOR_MAP, DEFAULT_PRICE_HISTORY, DEFAULT_YEAR_LOCKS]:
+            if path.exists():
+                z.write(path, arcname=f"data/{path.name}")
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def restore_data_backup_zip(zip_bytes: bytes) -> tuple[bool, str]:
+    import zipfile
+    _ensure_data_dir()
+    allowed = {"sales_store.csv", "vendor_map.xlsx", "price_history.csv", "year_locks.json"}
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as z:
+            names = z.namelist()
+            restored = []
+            for member in names:
+                base = Path(member).name
+                if base not in allowed:
+                    continue
+                target = DATA_DIR / base
+                target.write_bytes(z.read(member))
+                restored.append(base)
+        if not restored:
+            return False, "No compatible backup files were found in the ZIP."
+        return True, f"Restore complete: {', '.join(sorted(restored))}."
+    except Exception as e:
+        return False, f"Restore failed: {e}"
+
+
+def replace_year_in_store(df_raw: pd.DataFrame, target_year: int) -> pd.DataFrame:
+    if df_raw is None or df_raw.empty:
+        return df_raw.copy() if df_raw is not None else pd.DataFrame(columns=["Retailer","SKU","Units","UnitPrice","StartDate","EndDate","SourceFile"])
+    out = df_raw.copy()
+    start = pd.to_datetime(out.get("StartDate"), errors="coerce")
+    end = pd.to_datetime(out.get("EndDate"), errors="coerce")
+    week_end = end.fillna(start)
+    mask = week_end.dt.year != int(target_year)
+    return out[mask.fillna(True)].copy()
+
+
+def data_year_summary(df_all: pd.DataFrame) -> pd.DataFrame:
+    if df_all is None or df_all.empty or "WeekEnd" not in df_all.columns:
+        return pd.DataFrame(columns=["Year","Weeks","Rows","Retailers","Vendors","SKUs","Sales","First Week","Last Week"])
+    d = df_all.copy()
+    d["WeekEnd"] = pd.to_datetime(d["WeekEnd"], errors="coerce")
+    d = d[d["WeekEnd"].notna()].copy()
+    if d.empty:
+        return pd.DataFrame(columns=["Year","Weeks","Rows","Retailers","Vendors","SKUs","Sales","First Week","Last Week"])
+    d["Year"] = d["WeekEnd"].dt.year.astype(int)
+    out = d.groupby("Year", as_index=False).agg(
+        Weeks=("WeekEnd", "nunique"),
+        Rows=("SKU", "size"),
+        Retailers=("Retailer", "nunique"),
+        Vendors=("Vendor", "nunique"),
+        SKUs=("SKU", "nunique"),
+        Sales=("Sales", "sum"),
+        First_Week=("WeekEnd", "min"),
+        Last_Week=("WeekEnd", "max"),
+    ).sort_values("Year")
+    out["First Week"] = pd.to_datetime(out["First_Week"]).dt.date.astype(str)
+    out["Last Week"] = pd.to_datetime(out["Last_Week"]).dt.date.astype(str)
+    out = out.drop(columns=["First_Week", "Last_Week"])
+    return out[["Year","Weeks","Rows","Retailers","Vendors","SKUs","Sales","First Week","Last Week"]]
+
+
+def data_week_summary(df_all: pd.DataFrame, year: int) -> pd.DataFrame:
+    if df_all is None or df_all.empty or "WeekEnd" not in df_all.columns:
+        return pd.DataFrame(columns=["Week End","Week Label","Rows","Retailers","Vendors","SKUs","Sales"])
+    d = df_all.copy()
+    d["WeekEnd"] = pd.to_datetime(d["WeekEnd"], errors="coerce")
+    d = d[d["WeekEnd"].notna()].copy()
+    d = d[d["WeekEnd"].dt.year == int(year)].copy()
+    if d.empty:
+        return pd.DataFrame(columns=["Week End","Week Label","Rows","Retailers","Vendors","SKUs","Sales"])
+    out = d.groupby(["WeekEnd","WeekLabel"], as_index=False).agg(
+        Rows=("SKU", "size"),
+        Retailers=("Retailer", "nunique"),
+        Vendors=("Vendor", "nunique"),
+        SKUs=("SKU", "nunique"),
+        Sales=("Sales", "sum"),
+    ).sort_values("WeekEnd", ascending=False)
+    out["Week End"] = pd.to_datetime(out["WeekEnd"]).dt.date.astype(str)
+    return out[["Week End","WeekLabel","Rows","Retailers","Vendors","SKUs","Sales"]].rename(columns={"WeekLabel":"Week Label"})
 
 def load_vendor_map() -> pd.DataFrame:
     if not DEFAULT_VENDOR_MAP.exists():
@@ -759,7 +855,6 @@ def selection_total_card(label: str, cur_kpi: Dict[str, float], cmp_kpi: Dict[st
             <div class="kpi-sub" style="font-size:16px;font-weight:700;color:var(--text-color);">{units:,.0f}</div>
             <div class="kpi-delta" style="color:{units_color};margin-bottom:8px;">{units_arrow} {units_delta:,.0f}{units_pct_html} &nbsp; • &nbsp; ASP {money(asp)}</div>
             <div class="kpi-sub" style="margin-top:6px;">Active SKUs: {int(cur_kpi.get('Active SKUs', 0)):,} &nbsp; • &nbsp; Retailers: {int(cur_kpi.get('Active Retailers', 0)):,} &nbsp; • &nbsp; Vendors: {int(cur_kpi.get('Active Vendors', 0)):,}</div>
-            <div class="kpi-sub" style="margin-top:4px;">Avg Units / SKU: {(units / cur_kpi.get('Active SKUs', 0)) if cur_kpi.get('Active SKUs', 0) else 0:,.1f} &nbsp; • &nbsp; Avg Sales / SKU: {money((sales / cur_kpi.get('Active SKUs', 0)) if cur_kpi.get('Active SKUs', 0) else 0)}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -949,18 +1044,81 @@ def run_app():
 
     with st.sidebar:
         st.header("Data")
-        up = st.file_uploader("Upload weekly sales workbook (.xlsx)", type=["xlsx"])
-        year = st.number_input("Year hint (for filename parsing)", min_value=2010, max_value=2100, value=date.today().year, step=1)
-        if st.button("Ingest upload", disabled=(up is None)):
+        up = st.file_uploader("Upload weekly sales workbook (.xlsx)", type=["xlsx"], key="quick_upload")
+        year = st.number_input("Year hint (for filename parsing)", min_value=2010, max_value=2100, value=date.today().year, step=1, key="quick_year")
+        if st.button("Ingest upload", disabled=(up is None), key="btn_quick_ingest"):
             if up is not None:
                 raw = read_weekly_workbook(up, int(year))
-                # enrich now so we can persist UnitPrice (legacy) but also show computed
-                new = enrich_sales(raw, vm)
-                # Persist in legacy shape
                 merged = pd.concat([store, raw], ignore_index=True)
                 save_store(merged)
                 st.success(f"Ingested {len(raw):,} rows from {getattr(up,'name','upload.xlsx')}.")
-                store = load_store()
+                st.rerun()
+
+        with st.expander("Data Management Center", expanded=False):
+            df_mgmt = enrich_sales(store, vm)
+            summary_df = data_year_summary(df_mgmt)
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("Years", int(summary_df["Year"].nunique()) if not summary_df.empty else 0)
+            with c2:
+                st.metric("Weeks", int(summary_df["Weeks"].sum()) if not summary_df.empty else 0)
+            with c3:
+                st.metric("Rows", f"{len(store):,}")
+
+            st.markdown("**Uploaded years / weeks**")
+            if summary_df.empty:
+                st.caption("No sales data uploaded yet.")
+            else:
+                show_summary = summary_df.copy()
+                show_summary["Sales"] = show_summary["Sales"].map(lambda v: f"${v:,.0f}")
+                st.dataframe(show_summary, use_container_width=True, hide_index=True, height=min(260, 44 + 35 * (len(show_summary) + 1)))
+                year_opts = sorted(show_summary["Year"].astype(int).tolist())
+                pick_year = st.selectbox("View uploaded weeks for year", options=year_opts, index=len(year_opts)-1, key="dm_pick_year")
+                weeks_df = data_week_summary(df_mgmt, int(pick_year))
+                if not weeks_df.empty:
+                    weeks_df["Sales"] = weeks_df["Sales"].map(lambda v: f"${v:,.0f}")
+                    st.dataframe(weeks_df, use_container_width=True, hide_index=True, height=min(260, 44 + 35 * (len(weeks_df) + 1)))
+
+            st.markdown("**Upload new year / missing weeks**")
+            year_uploads = st.file_uploader("Upload one or more weekly workbooks", type=["xlsx"], accept_multiple_files=True, key="dm_bulk_upload")
+            ingest_year = st.number_input("Year for uploaded workbooks", min_value=2010, max_value=2100, value=date.today().year, step=1, key="dm_year")
+            replace_existing_year = st.checkbox("Replace existing rows for this year before ingest", value=False, key="dm_replace_year")
+            if st.button("Ingest uploaded workbooks", disabled=not year_uploads, key="btn_dm_ingest"):
+                all_new = []
+                for f in year_uploads or []:
+                    try:
+                        rows = read_weekly_workbook(f, int(ingest_year))
+                        if rows is not None and not rows.empty:
+                            all_new.append(rows)
+                    except Exception as e:
+                        st.error(f"Failed to read {getattr(f, 'name', 'upload')}: {e}")
+                if all_new:
+                    combined_new = pd.concat(all_new, ignore_index=True)
+                    base_store = replace_year_in_store(store, int(ingest_year)) if replace_existing_year else store.copy()
+                    merged = pd.concat([base_store, combined_new], ignore_index=True)
+                    save_store(merged)
+                    st.success(f"Ingested {len(all_new):,} workbook(s) for {int(ingest_year)}.")
+                    st.rerun()
+                else:
+                    st.info("No rows found in the uploaded workbooks.")
+
+            st.markdown("**Backup / Restore**")
+            st.download_button(
+                "Download backup ZIP",
+                data=create_data_backup_zip(),
+                file_name="cornerstone_sales_backup.zip",
+                mime="application/zip",
+                use_container_width=True,
+                key="btn_dm_backup",
+            )
+            restore_zip = st.file_uploader("Restore backup ZIP", type=["zip"], key="dm_restore_zip")
+            if st.button("Restore backup", disabled=(restore_zip is None), key="btn_dm_restore"):
+                ok, msg = restore_data_backup_zip(restore_zip.getvalue())
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
 
         st.divider()
         st.header("Filters")
